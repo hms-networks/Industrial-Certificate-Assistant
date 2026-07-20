@@ -25,3 +25,41 @@ ica/
 
 # Windows
 Thumbs.db
+
+# Test cache
+.pytest_cache/
+
+# Generated certificates and keys
+*.key
+*.pfx
+*.p12
+*.csr
+*.crt
+*.srl
+
+# OpenSSL demo/sample certificates
+openssl_binaries/windows/PEM/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+
+# Build artifacts
+build/
+dist/
+
+# Test cache
+.pytest_cache/
+
+
+openssl_binaries/windows/
+    ossltest.dll
+    p_test.dll
+    p_ossltest.dll
+    p_minimal.dll
+    padlock.dll
+    loader_attic.dll
