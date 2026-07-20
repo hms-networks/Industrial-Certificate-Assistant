@@ -1,0 +1,50 @@
+from pathlib import Path
+
+from ica.openssl_engine import OpenSSLEngine, Subject, normalize_sans
+from ica.project import Project
+
+
+def test_normalize_sans():
+    assert normalize_sans(["edge.local", "192.168.1.5", "EDGE.local"]) == ["DNS:edge.local", "IP:192.168.1.5"]
+
+
+def test_full_pki(tmp_path: Path):
+    engine = OpenSSLEngine()
+    password = "temporary-test-password"
+    workspace = tmp_path / "pki"
+    project = Project(str(workspace), "Test", "Test PKI", "local")
+    project.save()
+    engine.create_pki(workspace, Subject("Test Root CA", "Test"), Subject("Test Issuing CA", "Test"), password)
+    result = engine.issue_server(workspace, project.device_folder("edge"), Subject("edge.local", "Test"), ["edge.local", "192.168.1.10"], password, "device-key-password")
+    assert engine.verify_key_matches(result["certificate"], result["private_key"], "device-key-password")
+    assert "edge.local" in engine.inspect_certificate(result["certificate"])
+    assert "OK" in engine.verify_chain(result["certificate"], result["ca_chain"])
+    assert result["fullchain"].read_text().count("BEGIN CERTIFICATE") == 2
+    assert result["windows_install"].exists()
+    assert result["linux_install"].exists()
+
+
+def test_legacy_project_migration(tmp_path: Path):
+    engine = OpenSSLEngine()
+    workspace = tmp_path / "legacy-pki"
+    engine.create_pki(workspace, Subject("Legacy Root", "Legacy Org"), Subject("Legacy Issuing", "Legacy Org"), "legacy-password")
+    files = Project.legacy_files(workspace)
+    original = {name: path.read_bytes() for name, path in files.items()}
+    assert Project.is_legacy_workspace(workspace)
+    project = Project.migrate_legacy(workspace, "Legacy Org")
+    assert project.manifest.exists()
+    assert project.ca_key_encrypted is True
+    assert not Project.is_legacy_workspace(workspace)
+    assert all(path.read_bytes() == original[name] for name, path in files.items())
+
+
+def test_unencrypted_pki_and_device(tmp_path: Path):
+    engine = OpenSSLEngine()
+    workspace = tmp_path / "unencrypted-pki"
+    project = Project(str(workspace), "Lab", "Lab PKI", "local")
+    project.save()
+    engine.create_pki(workspace, Subject("Lab Root", "Lab"), Subject("Lab Issuing", "Lab"), "")
+    result = engine.issue_server(workspace, project.device_folder("lab-edge"), Subject("lab-edge.local", "Lab"), ["lab-edge.local", "192.168.1.20"], "", "")
+    assert engine.verify_key_matches(result["certificate"], result["private_key"], "")
+    assert "ENCRYPTED" not in (workspace / "root-ca/private/root-ca.key.pem").read_text()
+    assert "ENCRYPTED" not in result["private_key"].read_text()

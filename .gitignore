@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual Environment
+.venv/
+venv/
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# VS Code
+.vscode/
+
+# Certificates
+ica/
+*.key
+*.p12
+*.pfx
+
+# Logs
+*.log
+
+# Windows
+Thumbs.db
