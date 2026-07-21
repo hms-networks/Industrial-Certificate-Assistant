@@ -1,8 +1,9 @@
 # Copyright 2026 HMS Networks
 # SPDX-License-Identifier: Apache-2.0
 
-from pathlib import Path
+import json
 from inspect import signature
+from pathlib import Path
 
 from ica.openssl_engine import OpenSSLEngine, Subject, normalize_sans
 from ica.project import Project
@@ -31,6 +32,47 @@ def test_ca_validity_defaults_and_order(tmp_path: Path):
         assert "root CA validity" in str(exc)
     else:
         raise AssertionError("Equal root and intermediate validity should be rejected")
+
+
+def test_ecdsa_pki_profile_settings(tmp_path: Path):
+    engine = OpenSSLEngine()
+    workspace = tmp_path / "ecdsa-pki"
+    project = Project(str(workspace), "Edge Org", "Edge PKI", "local")
+    project.pki_key_type = "ECDSA"
+    project.pki_key_size_or_curve = "P-256"
+    project.pki_digest = "SHA-384"
+    project.pki_validity_days = 548
+    project.save()
+
+    engine.create_pki(
+        workspace,
+        Subject("Edge Root", "Edge Org"),
+        Subject("Edge Issuing", "Edge Org"),
+        "",
+        key_type=project.pki_key_type,
+        key_size_or_curve=project.pki_key_size_or_curve,
+        digest=project.pki_digest,
+        intermediate_days=project.pki_validity_days,
+        root_days=1096,
+    )
+
+    result = engine.issue_server(
+        workspace,
+        project.device_folder("edge-a"),
+        Subject("edge-a.local", "Edge Org"),
+        ["edge-a.local", "192.168.10.15"],
+        "",
+        "",
+        key_type=project.pki_key_type,
+        key_size_or_curve=project.pki_key_size_or_curve,
+        digest=project.pki_digest,
+        days=project.pki_validity_days,
+    )
+
+    cert_text = engine.inspect_certificate(result["certificate"]).lower()
+    assert "ecdsa-with-sha384" in cert_text
+    assert "id-ecpublickey" in cert_text
+    assert "prime256v1" in cert_text
 
 
 def test_full_pki(tmp_path: Path):
@@ -73,3 +115,32 @@ def test_unencrypted_pki_and_device(tmp_path: Path):
     assert engine.verify_key_matches(result["certificate"], result["private_key"], "")
     assert "ENCRYPTED" not in (workspace / "root-ca/private/root-ca.key.pem").read_text()
     assert "ENCRYPTED" not in result["private_key"].read_text()
+
+
+def test_load_project_backfills_new_pki_fields(tmp_path: Path):
+    workspace = tmp_path / "manifest-v1"
+    workspace.mkdir(parents=True, exist_ok=True)
+    manifest = workspace / "ica-project.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "workspace": str(workspace),
+                "organization": "Legacy Org",
+                "project_name": "Legacy PKI",
+                "dns_suffix": "local",
+                "ca_key_encrypted": True,
+                "created_utc": "2026-01-01T00:00:00+00:00",
+                "version": 1,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    project = Project.load(workspace)
+    assert project.version == 2
+    assert project.pki_key_type == "RSA"
+    assert project.pki_key_size_or_curve == "RSA 3072"
+    assert project.pki_digest == "SHA-256"
+    assert project.pki_validity_days == 825

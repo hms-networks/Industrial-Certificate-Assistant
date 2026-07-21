@@ -9,10 +9,10 @@ import secrets
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QSignalBlocker, Qt
+from PySide6.QtCore import QSettings, QSignalBlocker, Qt
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QInputDialog, QCheckBox,
-    QTextEdit, QVBoxLayout, QWidget, QScrollArea, QFrame, QButtonGroup, QSizePolicy)
+    QTextEdit, QVBoxLayout, QWidget, QScrollArea, QFrame, QButtonGroup, QSizePolicy, QComboBox, QSpinBox)
 
 from ica.openssl_engine import OpenSSLEngine, OpenSSLError, Subject
 from ica.project import Project, safe_name
@@ -21,9 +21,14 @@ from ica import __version__
 
 
 class MainWindow(QMainWindow):
+    RSA_KEY_CHOICES = ["RSA 2048", "RSA 3072", "RSA 4096"]
+    ECDSA_CURVE_CHOICES = ["P-256", "P-384"]
+
     def __init__(self):
         super().__init__()
         self.project: Project | None = None
+        self.settings = QSettings("IndustrialCertificateAssistant", "IndustrialCertificateAssistant")
+        self.dark_mode = self.settings.value("ui/dark_mode", False, type=bool)
         self.setWindowTitle(f"Industrial Certificate Assistant {__version__}")
         self.resize(1180, 780)
         self.setMinimumSize(940, 650)
@@ -44,6 +49,13 @@ class MainWindow(QMainWindow):
         subtitle = QLabel("Guided SSL/TLS Management for Crimson 3.2 Devices"); subtitle.setObjectName("brandSubtitle")
         brand.addWidget(title); brand.addWidget(subtitle)
         masthead_layout.addLayout(brand); masthead_layout.addStretch(1)
+        self.theme_toggle = QPushButton("Dark mode")
+        self.theme_toggle.setObjectName("themeToggle")
+        self.theme_toggle.setCheckable(True)
+        self.theme_toggle.setChecked(self.dark_mode)
+        self.theme_toggle.setText("Light mode" if self.dark_mode else "Dark mode")
+        self.theme_toggle.toggled.connect(self.toggle_theme)
+        masthead_layout.addWidget(self.theme_toggle)
         version = QLabel(f"Version {__version__}"); version.setObjectName("versionBadge")
         masthead_layout.addWidget(version)
         layout.addWidget(masthead)
@@ -90,51 +102,141 @@ class MainWindow(QMainWindow):
         footer = QFrame(); footer.setObjectName("footer")
         footer_layout = QHBoxLayout(footer); footer_layout.setContentsMargins(12, 4, 12, 4)
         footer_layout.addWidget(QLabel("Industrial Certificate Assistant")); footer_layout.addStretch(1)
+        self.theme_status = QLabel("")
+        self.theme_status.setObjectName("themeStatus")
+        footer_layout.addWidget(self.theme_status)
         footer_layout.addWidget(QLabel("PKI workspace and private keys remain on this computer"))
         layout.addWidget(footer)
         self.setCentralWidget(root)
         self.setStyleSheet(self.application_stylesheet())
+        self.update_theme_status()
 
-    @staticmethod
     def application_stylesheet():
+        if self.dark_mode:
+            return """
+            QWidget#appRoot, QWidget#workspace { background: #151a20; color: #e6edf3; }
+            QFrame#masthead { background: #0d3e5a; border-bottom: 1px solid #215a79; }
+            QLabel#brandTitle { color: #f3f8fb; font-size: 25px; font-weight: 600; }
+            QLabel#brandSubtitle { color: #c5d8e6; font-size: 12px; }
+            QLabel#versionBadge { color: #f3f8fb; background: #124a69; border: 1px solid #3e7592;
+                border-radius: 2px; padding: 5px 10px; }
+            QPushButton#themeToggle { background: #123f58; color: #f3f8fb; border: 1px solid #3e7592; font-weight: 600; }
+            QFrame#navigationRail { background: #1b232d; border-right: 1px solid #2f3c49; }
+            QPushButton#navButton { background: transparent; color: #d8e2ea; border: 1px solid transparent;
+                border-radius: 2px; padding: 7px 4px; font-size: 12px; text-align: center; }
+            QPushButton#navButton:hover { background: #243342; border-color: #3f5466; }
+            QPushButton#navButton:checked { background: #16222d; color: #cfe7f7; border: 1px solid #3f5466;
+                border-left: 5px solid #58a6d5; font-weight: 600; }
+            QLabel#railFooter { color: #94a5b3; border-top: 1px solid #2f3c49; padding-top: 10px; }
+            QFrame#statusStrip { background: #1b232d; border: 1px solid #2f3c49; }
+            QLabel#projectStatus { color: #8bc7a7; font-weight: 600; }
+            QLabel#pageTitle, QLabel#sectionHeader { background: #0d3e5a; color: #f3f8fb; padding: 7px 10px;
+                font-size: 15px; font-weight: 600; }
+            QLabel#pageDescription { color: #9fb2c1; padding: 3px 2px 7px 2px; }
+            QFrame#contentPanel { background: #1b232d; border: 1px solid #2f3c49; }
+            QFrame#contentPanel QLabel { background: transparent; color: #dfe7ee; }
+            QLineEdit, QTextEdit { background: #121a22; color: #e6edf3; border: 1px solid #3f5466;
+                border-radius: 1px; padding: 5px; selection-background-color: #2f6f95; }
+            QComboBox, QSpinBox {
+                background: #121a22;
+                color: #e6edf3;
+                border: 1px solid #3f5466;
+                border-radius: 1px;
+                padding: 4px 8px;
+                min-height: 22px;
+            }
+            QComboBox:focus, QSpinBox:focus, QLineEdit:focus, QTextEdit:focus { border: 1px solid #58a6d5; }
+            QLineEdit:read-only, QComboBox:disabled, QSpinBox:disabled { background: #232d37; color: #9fb2c1; }
+            QComboBox QAbstractItemView {
+                background: #1b232d;
+                color: #e6edf3;
+                selection-background-color: #2f6f95;
+                selection-color: #ffffff;
+                border: 1px solid #3f5466;
+                outline: 0;
+            }
+            QPushButton { background: #202a35; color: #e6edf3; border: 1px solid #3f5466;
+                border-radius: 2px; padding: 6px 12px; }
+            QPushButton:hover { background: #2a3644; border-color: #5b7387; }
+            QPushButton[action="primary"] { background: #1c6289; color: white; border-color: #2c7aa6;
+                font-weight: 600; padding: 8px 15px; }
+            QPushButton[action="primary"]:hover { background: #2a79a8; }
+            QCheckBox { spacing: 7px; }
+            QScrollArea { background: #151a20; border: 0; }
+            QTextEdit#activityLog { background: #121a22; color: #d9e3ea; border: 1px solid #3f5466;
+                font-family: Consolas, "Liberation Mono", monospace; font-size: 11px; }
+            QFrame#footer { background: #1b232d; border-top: 1px solid #2f3c49; color: #9fb2c1; }
+            QLabel#themeStatus { color: #9fb2c1; font-weight: 600; }
+            QToolTip { background: #1f2a35; color: #e6edf3; border: 1px solid #4f6476; }
+            """
+
         return """
-        QWidget#appRoot, QWidget#workspace { background: #f3f4f6; color: #17202a; }
-        QFrame#masthead { background: #074764; border-bottom: 1px solid #03364d; }
+        QWidget#appRoot, QWidget#workspace { background: #f6f8fb; color: #1a2430; }
+        QFrame#masthead { background: #0f4c6f; border-bottom: 1px solid #0b3f5c; }
         QLabel#brandTitle { color: white; font-size: 25px; font-weight: 600; }
         QLabel#brandSubtitle { color: #d9edf5; font-size: 12px; }
-        QLabel#versionBadge { color: white; background: #0b5d7d; border: 1px solid #5c90a5;
+        QLabel#versionBadge { color: white; background: #146185; border: 1px solid #5e8ea6;
             border-radius: 2px; padding: 5px 10px; }
-        QFrame#navigationRail { background: #eceeef; border-right: 1px solid #c1c7cc; }
-        QPushButton#navButton { background: transparent; color: #17202a; border: 1px solid transparent;
+        QPushButton#themeToggle { background: #146185; color: #ffffff; border: 1px solid #5e8ea6; font-weight: 600; }
+        QFrame#navigationRail { background: #edf1f4; border-right: 1px solid #c6ced5; }
+        QPushButton#navButton { background: transparent; color: #1a2430; border: 1px solid transparent;
             border-radius: 2px; padding: 7px 4px; font-size: 12px; text-align: center; }
-        QPushButton#navButton:hover { background: #dbe7ec; border-color: #9fb8c3; }
-        QPushButton#navButton:checked { background: #ffffff; color: #074764; border: 1px solid #9aa8ae;
-            border-left: 5px solid #074764; font-weight: 600; }
+        QPushButton#navButton:hover { background: #dbe7ef; border-color: #9fb8c3; }
+        QPushButton#navButton:checked { background: #ffffff; color: #0f4c6f; border: 1px solid #a2b1bb;
+            border-left: 5px solid #0f4c6f; font-weight: 600; }
         QLabel#railFooter { color: #5f6b72; border-top: 1px solid #c5cbd0; padding-top: 10px; }
-        QFrame#statusStrip { background: #ffffff; border: 1px solid #c9ced2; }
-        QLabel#projectStatus { color: #66737b; font-weight: 600; }
-        QLabel#pageTitle, QLabel#sectionHeader { background: #074764; color: white; padding: 7px 10px;
+        QFrame#statusStrip { background: #ffffff; border: 1px solid #ccd4db; }
+        QLabel#projectStatus { color: #51606a; font-weight: 600; }
+        QLabel#pageTitle, QLabel#sectionHeader { background: #0f4c6f; color: white; padding: 7px 10px;
             font-size: 15px; font-weight: 600; }
         QLabel#pageDescription { color: #5d6970; padding: 3px 2px 7px 2px; }
-        QFrame#contentPanel { background: #ffffff; border: 1px solid #c5cbd0; }
-        QFrame#contentPanel QLabel { background: transparent; }
-        QLineEdit, QTextEdit { background: #ffffff; color: #17202a; border: 1px solid #9da8ae;
-            border-radius: 1px; padding: 5px; selection-background-color: #0b668d; }
-        QLineEdit:focus, QTextEdit:focus { border: 1px solid #0b668d; }
-        QLineEdit:read-only { background: #edf0f2; color: #53616a; }
-        QPushButton { background: #ffffff; color: #17202a; border: 1px solid #9ca6ac;
+        QFrame#contentPanel { background: #ffffff; border: 1px solid #cbd3da; }
+        QFrame#contentPanel QLabel { background: transparent; color: #1a2430; }
+        QLineEdit, QTextEdit { background: #ffffff; color: #1a2430; border: 1px solid #9da8ae;
+            border-radius: 1px; padding: 5px; selection-background-color: #1a6a92; }
+        QComboBox, QSpinBox {
+            background: #ffffff;
+            color: #1a2430;
+            border: 1px solid #9da8ae;
+            border-radius: 1px;
+            padding: 4px 8px;
+            min-height: 22px;
+        }
+        QComboBox:focus, QSpinBox:focus, QLineEdit:focus, QTextEdit:focus { border: 1px solid #1a6a92; }
+        QComboBox:disabled, QSpinBox:disabled, QLineEdit:read-only { background: #edf0f2; color: #53616a; }
+        QComboBox QAbstractItemView {
+            background: #ffffff;
+            color: #1a2430;
+            selection-background-color: #d9edf5;
+            selection-color: #1a2430;
+            border: 1px solid #9da8ae;
+            outline: 0;
+        }
+        QPushButton { background: #ffffff; color: #1a2430; border: 1px solid #9ca6ac;
             border-radius: 2px; padding: 6px 12px; }
-        QPushButton:hover { background: #e9f1f4; border-color: #397a94; }
-        QPushButton[action="primary"] { background: #0b5675; color: white; border-color: #063e56;
+        QPushButton:hover { background: #edf4f8; border-color: #397a94; }
+        QPushButton[action="primary"] { background: #0f4c6f; color: white; border-color: #0b3f5c;
             font-weight: 600; padding: 8px 15px; }
-        QPushButton[action="primary"]:hover { background: #0d688e; }
+        QPushButton[action="primary"]:hover { background: #146185; }
         QCheckBox { spacing: 7px; }
-        QScrollArea { background: #f3f4f6; border: 0; }
+        QScrollArea { background: #f6f8fb; border: 0; }
         QTextEdit#activityLog { background: #ffffff; color: #26343b; border: 1px solid #aeb7bc;
             font-family: Consolas, "Liberation Mono", monospace; font-size: 11px; }
-        QFrame#footer { background: #eceeef; border-top: 1px solid #bdc5ca; color: #59656c; }
-        QToolTip { background: #fff; color: #17202a; border: 1px solid #6f7d84; }
+        QFrame#footer { background: #edf1f4; border-top: 1px solid #c6ced5; color: #59656c; }
+        QLabel#themeStatus { color: #59656c; font-weight: 600; }
+        QToolTip { background: #fff; color: #1a2430; border: 1px solid #6f7d84; }
         """
+
+    def toggle_theme(self, checked: bool):
+        self.dark_mode = checked
+        self.theme_toggle.setText("Light mode" if checked else "Dark mode")
+        self.settings.setValue("ui/dark_mode", checked)
+        self.setStyleSheet(self.application_stylesheet())
+        self.update_theme_status()
+
+    def update_theme_status(self):
+        if hasattr(self, "theme_status"):
+            self.theme_status.setText(f"Theme: {'Dark' if self.dark_mode else 'Light'}")
 
     @staticmethod
     def workflow_page(title_text, description):
@@ -154,6 +256,26 @@ class MainWindow(QMainWindow):
         button = QPushButton(text); button.setProperty("action", "primary")
         button.setMinimumHeight(34); button.clicked.connect(handler)
         return button
+
+    @staticmethod
+    def set_help(widget, text: str):
+        widget.setToolTip(text)
+        widget.setStatusTip(text)
+        return widget
+
+    def add_combo_row(self, form: QFormLayout, label: str, items: list[str], help_text: str, default: str | None = None):
+        combo = QComboBox(); combo.addItems(items)
+        if default and default in items:
+            combo.setCurrentText(default)
+        self.set_help(combo, help_text)
+        form.addRow(label, combo)
+        return combo
+
+    def add_spin_row(self, form: QFormLayout, label: str, minimum: int, maximum: int, value: int, help_text: str):
+        spin = QSpinBox(); spin.setRange(minimum, maximum); spin.setValue(value)
+        self.set_help(spin, help_text)
+        form.addRow(label, spin)
+        return spin
 
     @staticmethod
     def scrollable(page):
@@ -220,6 +342,11 @@ class MainWindow(QMainWindow):
             "Validate a certificate and matching private key, add the issuing CA chain, and build a Crimson-ready package.")
         certw, self.icert = self.path_field(); keyw, self.ikey = self.path_field(); caw, self.ica = self.path_field()
         outw, self.iimportout = self.path_field(True); self.ipass = self.password_field()
+        self.set_help(self.icert, "PEM certificate file to validate and package.")
+        self.set_help(self.ikey, "Private key that must match the selected certificate.")
+        self.set_help(self.ica, "CA chain PEM used to validate and build full chain outputs.")
+        self.set_help(self.ipass, "Password for the private key if the key is encrypted.")
+        self.set_help(self.iimportout, "Output folder for the generated Crimson-ready package.")
         form.addRow("Certificate", certw); form.addRow("Private key", keyw); form.addRow("CA chain", caw)
         form.addRow("Private-key password", self.ipass); form.addRow("New Crimson package folder", outw)
         form.addRow(self.primary_button("Validate and create Crimson package", self.validate_import))
@@ -232,6 +359,12 @@ class MainWindow(QMainWindow):
         projw, self.csrws = self.path_field(True, self.load_project)
         self.csrname = QLineEdit(); self.csrcn = QLineEdit(); self.csrorg = QLineEdit(); self.csrsans = QLineEdit()
         self.csrout = QLineEdit(readOnly=True)
+        self.set_help(self.csrws, "Existing project workspace containing ica-project.json.")
+        self.set_help(self.csrname, "Friendly request or device name used for output folder defaults.")
+        self.set_help(self.csrcn, "Common Name for the CSR subject, typically a hostname.")
+        self.set_help(self.csrorg, "Organization value in the CSR subject.")
+        self.set_help(self.csrsans, "Comma-separated SAN values (DNS names and/or IP addresses).")
+        self.set_help(self.csrout, "Auto-calculated output folder for CSR artifacts.")
         self.csrname.textChanged.connect(self.update_csr_defaults)
         form.addRow("Project workspace", projw); form.addRow("Request/device name", self.csrname)
         form.addRow("Common name", self.csrcn); form.addRow("Organization", self.csrorg)
@@ -248,14 +381,69 @@ class MainWindow(QMainWindow):
         parentw, self.pkiparent = self.path_field(True, lambda _: self.update_pki_workspace())
         self.pkiname = QLineEdit("Industrial_Certs"); self.pkiorg = QLineEdit(); self.pkidns = QLineEdit("local")
         self.pkiworkspace = QLineEdit(readOnly=True)
+        self.set_help(self.pkiparent, "Parent directory where the PKI project folder will be created.")
+        self.set_help(self.pkiname, "Project folder name used to create the PKI workspace path.")
+        self.set_help(self.pkiorg, "Organization name used in generated CA certificate subjects.")
+        self.set_help(self.pkidns, "Default DNS suffix used for certificate hostname defaults.")
+        self.set_help(self.pkiworkspace, "Auto-generated full path for the PKI workspace.")
+
+        self.pki_profile = self.add_combo_row(
+            form,
+            "Certificate profile",
+            ["Private PKI", "Server TLS", "Client TLS", "Code signing"],
+            "Select the intended certificate profile. This controls recommended defaults.",
+            "Private PKI",
+        )
+        self.pki_key_type = self.add_combo_row(
+            form,
+            "Key type",
+            ["RSA", "ECDSA"],
+            "Choose the key algorithm. RSA maximizes compatibility; ECDSA is smaller and faster.",
+            "RSA",
+        )
+        self.pki_key_size = self.add_combo_row(
+            form,
+            "Key size / curve",
+            self.RSA_KEY_CHOICES + self.ECDSA_CURVE_CHOICES,
+            "Choose cryptographic strength. Prefer RSA 3072+ or ECDSA P-256/P-384 for modern deployments.",
+            "RSA 3072",
+        )
+        self.pki_digest = self.add_combo_row(
+            form,
+            "Digest",
+            ["SHA-256", "SHA-384", "SHA-512"],
+            "Hash algorithm used for certificate signatures.",
+            "SHA-256",
+        )
+        self.pki_validity = self.add_spin_row(
+            form,
+            "Validity days",
+            1, 3650, 825,
+            "Number of days generated certificates are valid.",
+        )
         self.pkiname.textChanged.connect(self.update_pki_workspace)
         form.addRow("Parent folder", parentw); form.addRow("Project folder name", self.pkiname)
         form.addRow("Organization", self.pkiorg); form.addRow("Default DNS suffix", self.pkidns)
         form.addRow("Automatic PKI workspace", self.pkiworkspace)
+        self.pki_preview = QTextEdit(readOnly=True)
+        self.pki_preview.setMinimumHeight(88)
+        self.set_help(self.pki_preview, "Read-only summary of selected PKI settings.")
+        form.addRow("PKI settings preview", self.pki_preview)
+        self.pki_recommendation = QLabel("")
+        self.pki_recommendation.setWordWrap(True)
+        self.set_help(self.pki_recommendation, "Security posture indicator for the selected PKI algorithm, size/curve, and digest.")
+        form.addRow("Security recommendation", self.pki_recommendation)
+        self.pki_profile.currentTextChanged.connect(self.update_pki_preview)
+        self.pki_key_type.currentTextChanged.connect(self.update_key_size_choices)
+        self.pki_key_size.currentTextChanged.connect(self.update_pki_preview)
+        self.pki_digest.currentTextChanged.connect(self.update_pki_preview)
+        self.pki_validity.valueChanged.connect(self.update_pki_preview)
         self.pkiprotect, self.pkipass, self.pkipassconfirm = self.add_new_password_controls(form, "root and intermediate CA private keys")
         note = QLabel("Creates the complete protected folder structure, project metadata, root CA, intermediate CA, and Windows/Linux trust installers. Passwords are not saved.")
         note.setWordWrap(True); form.addRow(note)
         form.addRow(self.primary_button("Create PKI project", self.create_pki))
+        self.update_key_size_choices()
+        self.update_pki_preview()
         return page
 
     def issue_page(self):
@@ -266,6 +454,15 @@ class MainWindow(QMainWindow):
         self.idevice = QLineEdit(); self.iip = QLineEdit(); self.idns = QLineEdit(); self.iextra = QLineEdit()
         self.icn = QLineEdit(readOnly=True); self.iorg = QLineEdit(readOnly=True); self.isans = QLineEdit(readOnly=True)
         self.iout = QLineEdit(readOnly=True); self.icapass = self.password_field()
+        self.set_help(self.iws, "Project workspace containing the issuing CA certificates and keys.")
+        self.set_help(self.idevice, "Device name or serial used to build CN and output folder defaults.")
+        self.set_help(self.iip, "Primary device IP address required for the FlexEdge profile.")
+        self.set_help(self.idns, "DNS suffix for generated hostname defaults.")
+        self.set_help(self.iextra, "Additional comma-separated DNS names or IP addresses.")
+        self.set_help(self.icn, "Auto-generated Common Name based on device fields.")
+        self.set_help(self.isans, "Auto-generated SAN list used for certificate issuance.")
+        self.set_help(self.iout, "Auto-generated output folder for the device package.")
+        self.set_help(self.icapass, "Password for encrypted CA keys. Leave blank only for unencrypted CA keys.")
         for field in (self.idevice, self.iip, self.idns, self.iextra): field.textChanged.connect(self.update_issue_defaults)
         form.addRow("PKI project workspace", wsw); form.addRow("Device name or serial", self.idevice)
         form.addRow("Device IP address", self.iip); form.addRow("DNS suffix", self.idns)
@@ -286,6 +483,66 @@ class MainWindow(QMainWindow):
     def update_pki_workspace(self):
         parent, name = self.pkiparent.text().strip(), self.pkiname.text().strip()
         self.pkiworkspace.setText(str(Path(parent) / safe_name(name)) if parent and name else "")
+
+    def update_pki_preview(self):
+        if not hasattr(self, "pki_preview"):
+            return
+        lines = [
+            f"Profile: {self.pki_profile.currentText()}",
+            f"Key type: {self.pki_key_type.currentText()}",
+            f"Key size/curve: {self.pki_key_size.currentText()}",
+            f"Digest: {self.pki_digest.currentText()}",
+            f"Validity: {self.pki_validity.value()} days",
+        ]
+        self.pki_preview.setPlainText("\n".join(lines))
+        self.update_pki_recommendation()
+
+    def update_pki_recommendation(self):
+        if not hasattr(self, "pki_recommendation"):
+            return
+        key_type = self.pki_key_type.currentText()
+        key_size = self.pki_key_size.currentText()
+        digest = self.pki_digest.currentText()
+        baseline = (
+            (key_type == "RSA" and key_size == "RSA 3072" and digest == "SHA-256") or
+            (key_type == "ECDSA" and key_size == "P-256" and digest == "SHA-256")
+        )
+        strong_custom = (
+            (key_type == "RSA" and key_size in {"RSA 3072", "RSA 4096"} and digest in {"SHA-256", "SHA-384", "SHA-512"}) or
+            (key_type == "ECDSA" and key_size in {"P-256", "P-384"} and digest in {"SHA-256", "SHA-384", "SHA-512"})
+        )
+        if baseline:
+            self.pki_recommendation.setText("Recommended baseline selected.")
+            self.pki_recommendation.setStyleSheet("color: #166534; font-weight: 600;")
+        elif strong_custom:
+            self.pki_recommendation.setText("Strong custom security profile selected.")
+            self.pki_recommendation.setStyleSheet("color: #14532d; font-weight: 600;")
+        else:
+            self.pki_recommendation.setText("Compatibility-focused or weaker profile selected. Prefer RSA 3072+ or P-256/P-384 with SHA-256+.")
+            self.pki_recommendation.setStyleSheet("color: #9a3412; font-weight: 600;")
+
+    def update_key_size_choices(self):
+        if not hasattr(self, "pki_key_type") or not hasattr(self, "pki_key_size"):
+            return
+        key_type = self.pki_key_type.currentText()
+        previous = self.pki_key_size.currentText()
+        choices = self.RSA_KEY_CHOICES if key_type == "RSA" else self.ECDSA_CURVE_CHOICES
+        with QSignalBlocker(self.pki_key_size):
+            self.pki_key_size.clear(); self.pki_key_size.addItems(choices)
+            self.pki_key_size.setCurrentText(previous if previous in choices else ("RSA 3072" if key_type == "RSA" else "P-256"))
+        self.update_pki_preview()
+
+    def selected_pki_settings(self) -> dict[str, str | int]:
+        key_type = self.pki_key_type.currentText()
+        key_size_or_curve = self.pki_key_size.currentText()
+        digest = self.pki_digest.currentText()
+        validity_days = int(self.pki_validity.value())
+        if key_type == "RSA" and not key_size_or_curve.startswith("RSA "):
+            raise ValueError("Choose an RSA key size (RSA 2048/3072/4096) when key type is RSA.")
+        if key_type == "ECDSA" and key_size_or_curve.startswith("RSA "):
+            raise ValueError("Choose an ECDSA curve (P-256 or P-384) when key type is ECDSA.")
+        root_days = min(3650, max(validity_days + 365, validity_days * 2))
+        return {"key_type": key_type, "key_size_or_curve": key_size_or_curve, "digest": digest, "intermediate_days": validity_days, "root_days": root_days}
 
     def infer_legacy_organization(self, workspace: str | Path) -> str:
         if not self.engine: return ""
@@ -321,6 +578,16 @@ class MainWindow(QMainWindow):
         with QSignalBlocker(self.csrws): self.csrws.setText(project.workspace)
         self.csrorg.setText(project.organization); self.iorg.setText(project.organization)
         self.idns.setText(project.dns_suffix)
+        if hasattr(self, "pki_key_type"):
+            with QSignalBlocker(self.pki_key_type): self.pki_key_type.setCurrentText(project.pki_key_type)
+        if hasattr(self, "pki_key_size"):
+            self.update_key_size_choices()
+            with QSignalBlocker(self.pki_key_size): self.pki_key_size.setCurrentText(project.pki_key_size_or_curve)
+        if hasattr(self, "pki_digest"):
+            with QSignalBlocker(self.pki_digest): self.pki_digest.setCurrentText(project.pki_digest)
+        if hasattr(self, "pki_validity"):
+            with QSignalBlocker(self.pki_validity): self.pki_validity.setValue(project.pki_validity_days)
+        self.update_pki_preview()
         if project.ca_key_encrypted is True:
             self.icapass.setPlaceholderText("Required: this project uses encrypted CA keys")
         elif project.ca_key_encrypted is False:
@@ -385,8 +652,9 @@ class MainWindow(QMainWindow):
     def create_csr(self):
         if not self.project: self.load_project(self.csrws.text())
         def work():
+            if not self.project: raise ValueError("Load a valid PKI project first.")
             password = self.chosen_password(self.csrprotect, self.csrpass, self.csrpassconfirm, "CSR")
-            key, csr = self.engine.generate_csr(Path(self.csrout.text()), Subject(self.csrcn.text(), self.csrorg.text()), self.sans(self.csrsans), password)
+            key, csr = self.engine.generate_csr(Path(self.csrout.text()), Subject(self.csrcn.text(), self.csrorg.text()), self.sans(self.csrsans), password, key_type=self.project.pki_key_type, key_size_or_curve=self.project.pki_key_size_or_curve, digest=self.project.pki_digest)
             return {"private_key": key, "csr": csr}
         self.guard(work)
 
@@ -395,11 +663,16 @@ class MainWindow(QMainWindow):
             workspace = Path(self.pkiworkspace.text()); project = Project(str(workspace), self.pkiorg.text().strip(), self.pkiname.text().strip(), self.pkidns.text().strip() or "local")
             if not project.organization: raise ValueError("Organization is required.")
             if project.manifest.exists(): raise FileExistsError(f"Project already exists: {project.manifest}")
+            pki_settings = self.selected_pki_settings()
             password = self.chosen_password(self.pkiprotect, self.pkipass, self.pkipassconfirm, "CA", severe=True)
             project.ca_key_encrypted = bool(password)
+            project.pki_key_type = str(pki_settings["key_type"])
+            project.pki_key_size_or_curve = str(pki_settings["key_size_or_curve"])
+            project.pki_digest = str(pki_settings["digest"])
+            project.pki_validity_days = int(pki_settings["intermediate_days"])
             project.save()
             try:
-                result = self.engine.create_pki(workspace, Subject(f"{project.organization} Industrial Root CA", project.organization), Subject(f"{project.organization} Industrial Device Issuing CA", project.organization), password)
+                result = self.engine.create_pki(workspace, Subject(f"{project.organization} Industrial Root CA", project.organization), Subject(f"{project.organization} Industrial Device Issuing CA", project.organization), password, root_days=int(pki_settings["root_days"]), intermediate_days=int(pki_settings["intermediate_days"]), key_type=project.pki_key_type, key_size_or_curve=project.pki_key_size_or_curve, digest=project.pki_digest)
             except Exception:
                 project.manifest.unlink(missing_ok=True); raise
             self.load_project(workspace); return {"project": project.manifest, **result}
@@ -411,7 +684,7 @@ class MainWindow(QMainWindow):
             if not self.project: raise ValueError("Load a valid PKI project first.")
             if not self.iip.text().strip(): raise ValueError("Device IP address is required for the FlexEdge profile.")
             key_password = self.chosen_password(self.ikeyprotect, self.ikeypass, self.ikeypassconfirm, "FlexEdge")
-            return self.engine.issue_server(self.project.path, Path(self.iout.text()), Subject(self.icn.text(), self.project.organization), self.sans(self.isans), self.icapass.text(), key_password)
+            return self.engine.issue_server(self.project.path, Path(self.iout.text()), Subject(self.icn.text(), self.project.organization), self.sans(self.isans), self.icapass.text(), key_password, digest=self.project.pki_digest, key_type=self.project.pki_key_type, key_size_or_curve=self.project.pki_key_size_or_curve, days=self.project.pki_validity_days)
         self.guard(work)
 
 
