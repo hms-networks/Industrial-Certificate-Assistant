@@ -4,7 +4,7 @@ Cross-platform guided PKI utility for FlexEdge HTTPS certificates and future
 industrial TLS profiles. Cryptographic operations are performed by OpenSSL;
 the desktop interface is built with Python and PySide6.
 
-## Version 0.4.0 milestone
+## Version 0.4.1 milestone
 
 - Detect and report the OpenSSL installation.
 - Create a remembered, non-secret PKI project (`ica-project.json`).
@@ -37,6 +37,11 @@ the desktop interface is built with Python and PySide6.
 - Present the four certificate workflows in an HMS/Ecatcher-inspired light
   interface with a persistent navigation rail, teal section headers, compact
   status information, and clear primary actions.
+- Default new root CAs to 15 years and intermediate issuing CAs to 10 years,
+  while rejecting an intermediate validity that is not shorter than its root.
+- Publish the project under the Apache License 2.0, copyright HMS Networks.
+- Record OpenSSL third-party notices and prevent the Windows build from
+  bundling OpenSSL without its license, notice, version, and checksum records.
 
 VPN profiles are intentionally excluded because a separate VPN tool already
 exists.
@@ -61,8 +66,16 @@ build creates a Windows executable; a Linux build creates a Linux executable.
 Windows:
 
 ```bat
+prepare_windows_openssl.bat
 build_windows.bat
 ```
+
+`prepare_windows_openssl.bat` detects the locally staged OpenSSL release,
+copies only its matching executable and runtime DLLs into the canonical vendor
+folder, downloads the matching upstream license, creates notice/version/hash
+records, updates `.gitignore`, untracks development artifacts, and validates
+the portable runtime. It leaves the original development tree on disk unless
+the user explicitly confirms removal of caches and sample PEM test keys.
 
 Linux:
 
@@ -107,3 +120,9 @@ Industrial_Certs/
 ```
 
 Passwords are never stored in `ica-project.json`.
+
+## License
+
+Copyright 2026 HMS Networks. Licensed under the Apache License 2.0. See
+`LICENSE` and `NOTICE`. OpenSSL redistribution information is documented in
+`THIRD_PARTY_NOTICES.md`.

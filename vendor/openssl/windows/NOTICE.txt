@@ -1,0 +1,5 @@
+OpenSSL 4.0.1
+Copyright OpenSSL Project Authors. All Rights Reserved.
+Licensed under the Apache License 2.0.
+Source and licensing information: https://openssl-library.org/
+License retrieved from: https://raw.githubusercontent.com/openssl/openssl/openssl-4.0.1/LICENSE.txt

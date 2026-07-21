@@ -1,12 +1,12 @@
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
 
-# Virtual Environment
+# Virtual environments
 .venv/
 venv/
 
-# PyInstaller
+# Build artifacts
 build/
 dist/
 *.spec
@@ -19,6 +19,9 @@ ica/
 *.key
 *.p12
 *.pfx
+*.csr
+*.crt
+*.srl
 
 # Logs
 *.log
@@ -29,37 +32,10 @@ Thumbs.db
 # Test cache
 .pytest_cache/
 
-# Generated certificates and keys
-*.key
-*.pfx
-*.p12
-*.csr
-*.crt
-*.srl
-
 # OpenSSL demo/sample certificates
-openssl_binaries/windows/PEM/
-
-# Python
-__pycache__/
-*.py[cod]
-
-# Virtual environments
-.venv/
-venv/
-
-# Build artifacts
-build/
-dist/
-
-# Test cache
-.pytest_cache/
-
-
 openssl_binaries/windows/
-    ossltest.dll
-    p_test.dll
-    p_ossltest.dll
-    p_minimal.dll
-    padlock.dll
-    loader_attic.dll
+openssl_binaries/windows/PEM/*.pem
+*.cer
+openssl_binaries/
+vendor/openssl/windows/*.exe
+vendor/openssl/windows/*.dll

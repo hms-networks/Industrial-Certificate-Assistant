@@ -1,4 +1,8 @@
+# Copyright 2026 HMS Networks
+# SPDX-License-Identifier: Apache-2.0
+
 from pathlib import Path
+from inspect import signature
 
 from ica.openssl_engine import OpenSSLEngine, Subject, normalize_sans
 from ica.project import Project
@@ -6,6 +10,27 @@ from ica.project import Project
 
 def test_normalize_sans():
     assert normalize_sans(["edge.local", "192.168.1.5", "EDGE.local"]) == ["DNS:edge.local", "IP:192.168.1.5"]
+
+
+def test_ca_validity_defaults_and_order(tmp_path: Path):
+    parameters = signature(OpenSSLEngine.create_pki).parameters
+    assert parameters["root_days"].default == 5475
+    assert parameters["intermediate_days"].default == 3650
+
+    engine = OpenSSLEngine()
+    try:
+        engine.create_pki(
+            tmp_path / "invalid-validity",
+            Subject("Invalid Root", "Test"),
+            Subject("Invalid Issuing CA", "Test"),
+            "",
+            root_days=365,
+            intermediate_days=365,
+        )
+    except ValueError as exc:
+        assert "root CA validity" in str(exc)
+    else:
+        raise AssertionError("Equal root and intermediate validity should be rejected")
 
 
 def test_full_pki(tmp_path: Path):

@@ -30,6 +30,8 @@ if (Test-Path ".\IndustrialCertificateAssistant.spec") {
 $extraArgs = @()
 if (Test-Path ".\vendor\openssl\windows\openssl.exe") {
     $extraArgs += @("--add-binary", "vendor\openssl\windows;vendor\openssl\windows")
+} elseif (Test-Path ".\openssl_binaries\windows\openssl.exe") {
+    $extraArgs += @("--add-binary", "openssl_binaries\windows;openssl_binaries\windows")
 }
 
 $iconArg = @()

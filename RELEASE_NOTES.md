@@ -1,3 +1,18 @@
+# Version 0.4.1
+
+- Licensed the project under Apache License 2.0 with HMS Networks as the
+  copyright holder.
+- Added project notice and OpenSSL third-party redistribution documentation.
+- Added a Windows packaging safeguard that requires OpenSSL license, notice,
+  version, and SHA-256 records whenever bundled binaries are detected.
+- Added `prepare_windows_openssl.bat` to create a minimal, documented OpenSSL
+  vendor bundle, update Git exclusions, validate the runtime, and optionally
+  remove local caches and sample test keys.
+- Increased new root CA validity to 15 years and new intermediate CA validity
+  to 10 years.
+- Added validation that prevents an intermediate CA from having a lifetime
+  equal to or longer than its root CA.
+
 # Version 0.4.0
 
 - Reworked the interface using the HMS/Ecatcher visual language requested for
