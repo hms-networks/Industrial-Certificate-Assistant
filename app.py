@@ -482,7 +482,6 @@ class MainWindow(QMainWindow):
         ca_show = QCheckBox("Show"); ca_show.toggled.connect(lambda visible: self.show_passwords((self.icapass,), visible))
         ca_box.addWidget(self.icapass); ca_box.addWidget(ca_show)
         form.addRow("CA password (blank if CA is unencrypted)", ca_row)
-        self.ikeyprotect, self.ikeypass, self.ikeypassconfirm = self.add_new_password_controls(form, "FlexEdge private key")
         form.addRow("Automatic output folder", self.iout)
         note = QLabel("The output includes certificate.pem, private-key.pem, fullchain.pem, CA files, a validation report, and Windows/Linux trust scripts.")
         note.setWordWrap(True); form.addRow(note)
@@ -726,8 +725,7 @@ class MainWindow(QMainWindow):
                 if not ca_password:
                     raise ValueError("Enter the CA password to issue a device certificate.")
                 self.icapass.setText(ca_password)
-            key_password = self.chosen_password(self.ikeyprotect, self.ikeypass, self.ikeypassconfirm, "FlexEdge")
-            return self.engine.issue_server(self.project.path, Path(self.iout.text()), Subject(self.icn.text(), self.project.organization), self.sans(self.isans), ca_password, key_password, digest=self.project.pki_digest, key_type=self.project.pki_key_type, key_size_or_curve=self.project.pki_key_size_or_curve, days=self.project.pki_validity_days)
+            return self.engine.issue_server(self.project.path, Path(self.iout.text()), Subject(self.icn.text(), self.project.organization), self.sans(self.isans), ca_password, "", digest=self.project.pki_digest, key_type=self.project.pki_key_type, key_size_or_curve=self.project.pki_key_size_or_curve, days=self.project.pki_validity_days)
         self.guard(work)
 
 
