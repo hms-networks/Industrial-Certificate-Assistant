@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, QSignalBlocker, Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QInputDialog, QCheckBox,
     QTextEdit, QVBoxLayout, QWidget, QScrollArea, QFrame, QButtonGroup, QSizePolicy, QComboBox, QSpinBox)
@@ -18,6 +19,13 @@ from ica.openssl_engine import OpenSSLEngine, OpenSSLError, Subject
 from ica.project import Project, safe_name
 from ica.trust_scripts import create_trust_bundle
 from ica import __version__
+
+
+def get_resource(name: str) -> str:
+    """Get path to bundled resource, working in both development and PyInstaller builds."""
+    if hasattr(sys, '_MEIPASS'):
+        return Path(sys._MEIPASS) / name
+    return Path(__file__).parent / name
 
 
 class MainWindow(QMainWindow):
@@ -30,6 +38,7 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("IndustrialCertificateAssistant", "IndustrialCertificateAssistant")
         self.dark_mode = self.settings.value("ui/dark_mode", False, type=bool)
         self.setWindowTitle(f"Industrial Certificate Assistant {__version__}")
+        self.setWindowIcon(QIcon(str(get_resource("HMS.ico"))))
         self.resize(1180, 780)
         self.setMinimumSize(940, 650)
         self.log = QTextEdit(readOnly=True)
@@ -111,7 +120,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(self.application_stylesheet())
         self.update_theme_status()
 
-    def application_stylesheet():
+    def application_stylesheet(self):
         if self.dark_mode:
             return """
             QWidget#appRoot, QWidget#workspace { background: #151a20; color: #e6edf3; }
