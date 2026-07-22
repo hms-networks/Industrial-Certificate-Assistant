@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QApplication, QFileDialog, QFormLayout, QHBoxLayo
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QInputDialog, QCheckBox,
     QTextEdit, QVBoxLayout, QWidget, QScrollArea, QFrame, QButtonGroup, QSizePolicy, QComboBox, QSpinBox)
 
-from ica.openssl_engine import OpenSSLEngine, OpenSSLError, Subject
+from ica.openssl_engine import OpenSSLEngine, OpenSSLError, Subject, is_encrypted_private_key
 from ica.project import Project, safe_name
 from ica.trust_scripts import create_trust_bundle
 from ica import __version__
@@ -427,7 +427,7 @@ class MainWindow(QMainWindow):
         self.pki_validity = self.add_spin_row(
             form,
             "Validity days",
-            1, 3650, 825,
+            1, 3650, 3650,
             "Number of days generated certificates are valid.",
         )
         self.pkiname.textChanged.connect(self.update_pki_workspace)
@@ -550,7 +550,8 @@ class MainWindow(QMainWindow):
             raise ValueError("Choose an RSA key size (RSA 2048/3072/4096) when key type is RSA.")
         if key_type == "ECDSA" and key_size_or_curve.startswith("RSA "):
             raise ValueError("Choose an ECDSA curve (P-256 or P-384) when key type is ECDSA.")
-        root_days = min(3650, max(validity_days + 365, validity_days * 2))
+        # Keep root validity strictly longer than intermediate validity.
+        root_days = min(5475, max(validity_days + 365, validity_days * 2))
         return {"key_type": key_type, "key_size_or_curve": key_size_or_curve, "digest": digest, "intermediate_days": validity_days, "root_days": root_days}
 
     def infer_legacy_organization(self, workspace: str | Path) -> str:
@@ -655,8 +656,27 @@ class MainWindow(QMainWindow):
     def sans(field): return [x.strip() for x in field.text().split(",") if x.strip()]
 
     def validate_import(self):
-        self.guard(lambda: self.engine.package_existing(Path(self.icert.text()), Path(self.ikey.text()),
-            Path(self.ica.text()), Path(self.iimportout.text()), self.ipass.text()))
+        def work():
+            certificate = Path(self.icert.text())
+            private_key = Path(self.ikey.text())
+            ca_chain = Path(self.ica.text())
+            output = Path(self.iimportout.text())
+            key_password = self.ipass.text()
+            if is_encrypted_private_key(private_key) and not key_password:
+                value, accepted = QInputDialog.getText(
+                    self,
+                    "Private-key password required",
+                    "The selected private key is encrypted. Enter its password to continue:",
+                    QLineEdit.Password,
+                )
+                if not accepted:
+                    raise ValueError("Import validation was cancelled.")
+                key_password = value
+                if not key_password:
+                    raise ValueError("Enter the private-key password to continue.")
+                self.ipass.setText(key_password)
+            return self.engine.package_existing(certificate, private_key, ca_chain, output, key_password)
+        self.guard(work)
 
     def create_csr(self):
         if not self.project: self.load_project(self.csrws.text())
@@ -692,8 +712,22 @@ class MainWindow(QMainWindow):
         def work():
             if not self.project: raise ValueError("Load a valid PKI project first.")
             if not self.iip.text().strip(): raise ValueError("Device IP address is required for the FlexEdge profile.")
+            ca_password = self.icapass.text()
+            if self.project.ca_key_encrypted is True and not ca_password:
+                value, accepted = QInputDialog.getText(
+                    self,
+                    "CA password required",
+                    "This PKI project uses encrypted CA keys. Enter the CA password to issue a device certificate:",
+                    QLineEdit.Password,
+                )
+                if not accepted:
+                    raise ValueError("Device-certificate issuance was cancelled.")
+                ca_password = value
+                if not ca_password:
+                    raise ValueError("Enter the CA password to issue a device certificate.")
+                self.icapass.setText(ca_password)
             key_password = self.chosen_password(self.ikeyprotect, self.ikeypass, self.ikeypassconfirm, "FlexEdge")
-            return self.engine.issue_server(self.project.path, Path(self.iout.text()), Subject(self.icn.text(), self.project.organization), self.sans(self.isans), self.icapass.text(), key_password, digest=self.project.pki_digest, key_type=self.project.pki_key_type, key_size_or_curve=self.project.pki_key_size_or_curve, days=self.project.pki_validity_days)
+            return self.engine.issue_server(self.project.path, Path(self.iout.text()), Subject(self.icn.text(), self.project.organization), self.sans(self.isans), ca_password, key_password, digest=self.project.pki_digest, key_type=self.project.pki_key_type, key_size_or_curve=self.project.pki_key_size_or_curve, days=self.project.pki_validity_days)
         self.guard(work)
 
 

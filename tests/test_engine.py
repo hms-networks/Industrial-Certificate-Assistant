@@ -117,6 +117,57 @@ def test_unencrypted_pki_and_device(tmp_path: Path):
     assert "ENCRYPTED" not in result["private_key"].read_text()
 
 
+def test_issue_requires_ca_password_for_encrypted_project(tmp_path: Path):
+    engine = OpenSSLEngine()
+    workspace = tmp_path / "encrypted-pki"
+    project = Project(str(workspace), "Lab", "Lab PKI", "local")
+    project.save()
+    engine.create_pki(workspace, Subject("Lab Root", "Lab"), Subject("Lab Issuing", "Lab"), "ca-password")
+
+    try:
+        engine.issue_server(
+            workspace,
+            project.device_folder("lab-edge"),
+            Subject("lab-edge.local", "Lab"),
+            ["lab-edge.local", "192.168.1.20"],
+            "",
+            "",
+        )
+    except ValueError as exc:
+        assert "encrypted CA keys" in str(exc)
+    else:
+        raise AssertionError("Expected encrypted CA issuance without CA password to fail")
+
+
+def test_package_existing_requires_password_for_encrypted_private_key(tmp_path: Path):
+    engine = OpenSSLEngine()
+    workspace = tmp_path / "import-source"
+    project = Project(str(workspace), "Lab", "Lab PKI", "local")
+    project.save()
+    engine.create_pki(workspace, Subject("Lab Root", "Lab"), Subject("Lab Issuing", "Lab"), "")
+    issued = engine.issue_server(
+        workspace,
+        project.device_folder("lab-edge"),
+        Subject("lab-edge.local", "Lab"),
+        ["lab-edge.local", "192.168.1.20"],
+        "",
+        "device-password",
+    )
+
+    try:
+        engine.package_existing(
+            issued["certificate"],
+            issued["private_key"],
+            issued["ca_chain"],
+            workspace / "imported-package",
+            "",
+        )
+    except ValueError as exc:
+        assert "encrypted" in str(exc).lower()
+    else:
+        raise AssertionError("Expected encrypted private key import without password to fail")
+
+
 def test_load_project_backfills_new_pki_fields(tmp_path: Path):
     workspace = tmp_path / "manifest-v1"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -143,4 +194,4 @@ def test_load_project_backfills_new_pki_fields(tmp_path: Path):
     assert project.pki_key_type == "RSA"
     assert project.pki_key_size_or_curve == "RSA 3072"
     assert project.pki_digest == "SHA-256"
-    assert project.pki_validity_days == 825
+    assert project.pki_validity_days == 3650
