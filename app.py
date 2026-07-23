@@ -11,16 +11,20 @@ import ctypes
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, QSignalBlocker, Qt
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QInputDialog, QCheckBox,
-    QTextEdit, QVBoxLayout, QWidget, QScrollArea, QFrame, QButtonGroup, QSizePolicy, QComboBox, QSpinBox,
-    QSplashScreen)
+    QTextEdit, QVBoxLayout, QWidget, QScrollArea, QFrame, QButtonGroup, QSizePolicy, QComboBox, QSpinBox)
 
 from ica.openssl_engine import OpenSSLEngine, OpenSSLError, Subject, is_encrypted_private_key
 from ica.project import Project, safe_name
 from ica.trust_scripts import create_trust_bundle
 from ica import __version__
+
+try:
+    import pyi_splash
+except Exception:
+    pyi_splash = None
 
 
 def get_resource(name: str) -> str:
@@ -42,18 +46,14 @@ def set_windows_app_id() -> None:
         pass
 
 
-def create_startup_splash(icon: QIcon) -> QSplashScreen | None:
-    banner_path = get_resource("HMS_banner.png")
-    if not banner_path.is_file():
-        return None
-    pixmap = QPixmap(str(banner_path))
-    if pixmap.isNull():
-        return None
-    splash = QSplashScreen(pixmap)
-    splash.setWindowFlag(Qt.WindowStaysOnTopHint, True)
-    splash.setWindowIcon(icon)
-    splash.show()
-    return splash
+def close_bootloader_splash() -> None:
+    """Close the PyInstaller splash once the Qt main window is ready."""
+    if pyi_splash is None:
+        return
+    try:
+        pyi_splash.close()
+    except Exception:
+        pass
 
 
 class MainWindow(QMainWindow):
@@ -764,14 +764,12 @@ def main():
     app_icon = QIcon(str(get_resource("HMS.ico")))
     if not app_icon.isNull():
         app.setWindowIcon(app_icon)
-    splash = create_startup_splash(app_icon)
-    app.processEvents()
     window = MainWindow()
     if not app_icon.isNull():
         window.setWindowIcon(app_icon)
     window.show()
-    if splash is not None:
-        splash.finish(window)
+    app.processEvents()
+    close_bootloader_splash()
     return app.exec()
 
 
