@@ -83,7 +83,7 @@ class MainWindow(QMainWindow):
         masthead_layout = QHBoxLayout(masthead); masthead_layout.setContentsMargins(20, 10, 18, 10)
         brand = QVBoxLayout(); brand.setSpacing(1)
         title = QLabel("Industrial Certificate Assistant"); title.setObjectName("brandTitle")
-        subtitle = QLabel("Guided SSL/TLS Management for Crimson 3.2 Devices"); subtitle.setObjectName("brandSubtitle")
+        subtitle = QLabel("Guided SSL/TLS Management for Crimson 3.2 and MQTT Workflows"); subtitle.setObjectName("brandSubtitle")
         brand.addWidget(title); brand.addWidget(subtitle)
         masthead_layout.addLayout(brand); masthead_layout.addStretch(1)
         self.theme_toggle = QPushButton("Dark mode")
@@ -106,7 +106,7 @@ class MainWindow(QMainWindow):
             ("IMPORT", "Existing\ncertificate", self.import_page),
             ("REQUEST", "Company\nrequest", self.csr_page),
             ("PKI", "Create\nprivate PKI", self.pki_page),
-            ("DEVICE", "Issue device\ncertificate", self.issue_page),
+            ("ISSUE", "Issue protocol\ncertificate", self.issue_page),
         )
         self.nav_group = QButtonGroup(self); self.nav_group.setExclusive(True)
         for index, (icon, label, factory) in enumerate(page_definitions):
@@ -347,7 +347,7 @@ class MainWindow(QMainWindow):
         protect.toggled.connect(toggle)
         generate.clicked.connect(lambda: self.set_generated_password(password, confirm))
         show.toggled.connect(lambda visible: self.show_passwords((password, confirm), visible))
-        return protect, password, confirm
+        return protect, password, confirm, controls
 
     @staticmethod
     def set_generated_password(password, confirm):
@@ -406,7 +406,7 @@ class MainWindow(QMainWindow):
         form.addRow("Project workspace", projw); form.addRow("Request/device name", self.csrname)
         form.addRow("Common name", self.csrcn); form.addRow("Organization", self.csrorg)
         form.addRow("DNS names and IPs (comma-separated)", self.csrsans)
-        self.csrprotect, self.csrpass, self.csrpassconfirm = self.add_new_password_controls(form, "CSR private key")
+        self.csrprotect, self.csrpass, self.csrpassconfirm, self.csrpwcontrols = self.add_new_password_controls(form, "CSR private key")
         form.addRow("Automatic output folder", self.csrout)
         form.addRow(self.primary_button("Create private key and certificate request", self.create_csr))
         return page
@@ -475,7 +475,7 @@ class MainWindow(QMainWindow):
         self.pki_key_size.currentTextChanged.connect(self.update_pki_preview)
         self.pki_digest.currentTextChanged.connect(self.update_pki_preview)
         self.pki_validity.valueChanged.connect(self.update_pki_preview)
-        self.pkiprotect, self.pkipass, self.pkipassconfirm = self.add_new_password_controls(form, "root and intermediate CA private keys")
+        self.pkiprotect, self.pkipass, self.pkipassconfirm, self.pkipwcontrols = self.add_new_password_controls(form, "root and intermediate CA private keys")
         note = QLabel("Creates the complete protected folder structure, project metadata, root CA, intermediate CA, and Windows/Linux trust installers. Passwords are not saved.")
         note.setWordWrap(True); form.addRow(note)
         form.addRow(self.primary_button("Create PKI project", self.create_pki))
@@ -485,35 +485,74 @@ class MainWindow(QMainWindow):
 
     def issue_page(self):
         page, form = self.workflow_page(
-            "Issue a Crimson 3.2 device certificate",
-            "Issue and package a trusted HTTPS certificate for a FlexEdge device using the loaded PKI project.")
+            "Issue a protocol certificate",
+            "Issue and package certificates for Crimson HTTPS and MQTT broker/client workflows using the loaded PKI project.")
         wsw, self.iws = self.path_field(True, self.load_project)
-        self.idevice = QLineEdit(); self.iip = QLineEdit(); self.idns = QLineEdit(); self.iextra = QLineEdit()
+        self.issue_protocol = QComboBox()
+        self.issue_protocol.addItems([
+            "Crimson 3.2 HTTPS Server",
+            "MQTT Broker",
+            "MQTT Client/Device",
+            "OPC UA Application (coming soon)",
+        ])
+        self.mqtt_role = QComboBox(); self.mqtt_role.addItems(["Broker", "Client/Device"])
+        self.idevice = QLineEdit(); self.iclientid = QLineEdit(); self.icn_override = QLineEdit()
+        self.iip = QLineEdit(); self.idns = QLineEdit(); self.iextra = QLineEdit()
         self.icn = QLineEdit(readOnly=True); self.iorg = QLineEdit(readOnly=True); self.isans = QLineEdit(readOnly=True)
         self.iout = QLineEdit(readOnly=True); self.icapass = self.password_field()
+        self.issue_days = QSpinBox(); self.issue_days.setRange(1, 3650); self.issue_days.setValue(397)
+        self.mqtt_mutual_tls = QCheckBox("Enable mutual TLS (require client certificate)")
         self.set_help(self.iws, "Project workspace containing the issuing CA certificates and keys.")
-        self.set_help(self.idevice, "Device name or serial used to build CN and output folder defaults.")
-        self.set_help(self.iip, "Primary device IP address required for the FlexEdge profile.")
-        self.set_help(self.idns, "DNS suffix for generated hostname defaults.")
+        self.set_help(self.issue_protocol, "Choose which certificate profile to issue.")
+        self.set_help(self.mqtt_role, "Broker certificates identify MQTT servers; client certificates identify connecting devices.")
+        self.set_help(self.idevice, "Device or broker name used for folder naming and default certificate identity.")
+        self.set_help(self.iclientid, "MQTT Client ID. Required for MQTT client certificates.")
+        self.set_help(self.icn_override, "Optional explicit Common Name override. Leave blank to use protocol defaults.")
+        self.set_help(self.iip, "Optional or required IP address depending on profile.")
+        self.set_help(self.idns, "Primary DNS name used by clients to connect to this broker or endpoint.")
         self.set_help(self.iextra, "Additional comma-separated DNS names or IP addresses.")
         self.set_help(self.icn, "Auto-generated Common Name based on device fields.")
         self.set_help(self.isans, "Auto-generated SAN list used for certificate issuance.")
         self.set_help(self.iout, "Auto-generated output folder for the device package.")
         self.set_help(self.icapass, "Password for encrypted CA keys. Leave blank only for unencrypted CA keys.")
-        for field in (self.idevice, self.iip, self.idns, self.iextra): field.textChanged.connect(self.update_issue_defaults)
-        form.addRow("PKI project workspace", wsw); form.addRow("Device name or serial", self.idevice)
-        form.addRow("Device IP address", self.iip); form.addRow("DNS suffix", self.idns)
+        self.set_help(self.issue_days, "Issued certificate validity period in days.")
+        self.set_help(self.mqtt_mutual_tls, "Mutual TLS authenticates both sides. Never upload CA private keys to Mosquitto or industrial devices.")
+        for field in (self.idevice, self.iclientid, self.icn_override, self.iip, self.idns, self.iextra):
+            field.textChanged.connect(self.update_issue_defaults)
+        self.issue_protocol.currentTextChanged.connect(self.update_issue_defaults)
+        self.issue_protocol.currentTextChanged.connect(self.update_issue_mode)
+        self.mqtt_role.currentTextChanged.connect(self.sync_issue_protocol_from_role)
+
+        form.addRow("PKI project workspace", wsw)
+        form.addRow("Protocol/Profile", self.issue_protocol)
+        form.addRow("MQTT Role", self.mqtt_role)
+        form.addRow("Device/Broker name", self.idevice)
+        form.addRow("MQTT Client ID", self.iclientid)
+        form.addRow("Primary DNS name", self.idns)
+        form.addRow("Primary IP address", self.iip)
         form.addRow("Additional DNS names or IPs", self.iextra)
+        form.addRow("Optional Common Name override", self.icn_override)
         form.addRow("Automatic common name", self.icn); form.addRow("Organization", self.iorg)
         form.addRow("Automatic Subject Alternative Names", self.isans)
         ca_row = QWidget(); ca_box = QHBoxLayout(ca_row); ca_box.setContentsMargins(0, 0, 0, 0)
         ca_show = QCheckBox("Show"); ca_show.toggled.connect(lambda visible: self.show_passwords((self.icapass,), visible))
         ca_box.addWidget(self.icapass); ca_box.addWidget(ca_show)
+        self.issue_keyprotect, self.issue_keypass, self.issue_keypassconfirm, self.issue_keycontrols = self.add_new_password_controls(form, "issued private key")
+        self.issue_keyprotect.toggled.connect(lambda _: self.update_issue_mode())
         form.addRow("CA password (blank if CA is unencrypted)", ca_row)
+        form.addRow("Certificate validity (days)", self.issue_days)
+        form.addRow(self.mqtt_mutual_tls)
         form.addRow("Automatic output folder", self.iout)
-        note = QLabel("The output includes certificate.pem, private-key.pem, fullchain.pem, CA files, a validation report, and Windows/Linux trust scripts.")
+        note = QLabel(
+            "Broker certificates identify MQTT servers, and client certificates identify connecting devices. "
+            "DNS/IP SANs must match the exact address used by clients. Keep CA private keys protected and never upload them to Mosquitto or industrial devices. "
+            "Public IPs can change; use stable DNS when possible. Restrict port 8883 to approved sources and do not expose port 1883 publicly."
+        )
         note.setWordWrap(True); form.addRow(note)
-        form.addRow(self.primary_button("Issue complete FlexEdge HTTPS package", self.issue))
+        self.issue_action = self.primary_button("Issue protocol certificate package", self.issue)
+        form.addRow(self.issue_action)
+        self.issue_form = form
+        self.update_issue_mode()
         return page
 
     def update_pki_workspace(self):
@@ -654,20 +693,106 @@ class MainWindow(QMainWindow):
             self.csrcn.setText(host.lower()); self.csrsans.setText(host.lower())
             self.csrout.setText(str(self.project.pending_folder(name)))
 
+    def _set_row_visible(self, field: QWidget, visible: bool):
+        if not hasattr(self, "issue_form"):
+            return
+        label = self.issue_form.labelForField(field)
+        if label is not None:
+            label.setVisible(visible)
+        field.setVisible(visible)
+
+    def _selected_issue_mode(self) -> tuple[str, str]:
+        protocol = self.issue_protocol.currentText()
+        if protocol == "MQTT Broker":
+            return "mqtt", "broker"
+        if protocol == "MQTT Client/Device":
+            return "mqtt", "client"
+        if protocol.startswith("OPC UA"):
+            return "opcua", "server"
+        return "crimson", "server"
+
+    def sync_issue_protocol_from_role(self):
+        target = "MQTT Broker" if self.mqtt_role.currentText() == "Broker" else "MQTT Client/Device"
+        if self.issue_protocol.currentText().startswith("MQTT") and self.issue_protocol.currentText() != target:
+            with QSignalBlocker(self.issue_protocol):
+                self.issue_protocol.setCurrentText(target)
+        self.update_issue_mode()
+
+    def update_issue_mode(self):
+        mode, role = self._selected_issue_mode()
+        is_mqtt = mode == "mqtt"
+        is_client = role == "client"
+
+        if self.issue_protocol.currentText() == "MQTT Broker" and self.mqtt_role.currentText() != "Broker":
+            with QSignalBlocker(self.mqtt_role):
+                self.mqtt_role.setCurrentText("Broker")
+        elif self.issue_protocol.currentText() == "MQTT Client/Device" and self.mqtt_role.currentText() != "Client/Device":
+            with QSignalBlocker(self.mqtt_role):
+                self.mqtt_role.setCurrentText("Client/Device")
+
+        self._set_row_visible(self.mqtt_role, is_mqtt)
+        self._set_row_visible(self.iclientid, is_client)
+        self._set_row_visible(self.icn_override, is_mqtt)
+        self._set_row_visible(self.issue_keyprotect, is_mqtt)
+        self._set_row_visible(self.issue_keypass, is_mqtt and self.issue_keyprotect.isChecked())
+        self._set_row_visible(self.issue_keypassconfirm, is_mqtt and self.issue_keyprotect.isChecked())
+        self._set_row_visible(self.issue_keycontrols, is_mqtt and self.issue_keyprotect.isChecked())
+        self._set_row_visible(self.issue_days, True)
+        self.mqtt_mutual_tls.setVisible(is_mqtt and role == "broker")
+        self._set_row_visible(self.idns, True)
+        self._set_row_visible(self.iip, True)
+        self._set_row_visible(self.iextra, True)
+
+        if mode == "opcua":
+            self.issue_action.setEnabled(False)
+            self.issue_action.setText("OPC UA issuance coming soon")
+        else:
+            self.issue_action.setEnabled(True)
+            self.issue_action.setText("Issue protocol certificate package")
+        self.update_issue_defaults()
+
     def update_issue_defaults(self):
         if not self.project: return
-        name = self.idevice.text().strip(); suffix = self.idns.text().strip().strip(".") or self.project.dns_suffix
-        if not name: return
-        host = name if "." in name else f"{name}.{suffix}"
-        values = [host.lower()]
+        mode, role = self._selected_issue_mode()
+        name = self.idevice.text().strip()
+        dns_name = self.idns.text().strip().lower()
+        client_id = self.iclientid.text().strip()
+        values: list[str] = []
+
+        if mode == "crimson":
+            suffix = dns_name.strip(".") or self.project.dns_suffix
+            if name:
+                host = name if "." in name else f"{name}.{suffix}"
+                values.append(host.lower())
+                cn_value = host.lower()
+                output = self.project.device_folder(name)
+            else:
+                cn_value = ""
+                output = Path(self.project.workspace)
+        elif role == "broker":
+            if dns_name:
+                values.append(dns_name)
+            cn_value = self.icn_override.text().strip() or dns_name or name.lower()
+            output = self.project.mqtt_broker_folder(name) if name else Path(self.project.workspace) / "mqtt" / "brokers"
+        else:
+            if dns_name:
+                values.append(dns_name)
+            cn_value = self.icn_override.text().strip() or client_id
+            output = self.project.mqtt_client_folder(client_id) if client_id else Path(self.project.workspace) / "mqtt" / "clients"
+
         ip = self.iip.text().strip()
         if ip:
-            try: values.append(str(ipaddress.ip_address(ip)))
-            except ValueError: pass
+            try:
+                values.append(str(ipaddress.ip_address(ip)))
+            except ValueError:
+                pass
         values.extend(x.strip() for x in self.iextra.text().split(",") if x.strip())
         values = list(dict.fromkeys(values))
-        self.icn.setText(host.lower()); self.isans.setText(", ".join(values)); self.iorg.setText(self.project.organization)
-        self.iout.setText(str(self.project.device_folder(name)))
+
+        self.icn.setText(cn_value)
+        self.isans.setText(", ".join(values))
+        self.iorg.setText(self.project.organization)
+        self.iout.setText(str(output))
 
     def guard(self, action):
         if not self.engine:
@@ -738,22 +863,79 @@ class MainWindow(QMainWindow):
         if not self.project: self.load_project(self.iws.text())
         def work():
             if not self.project: raise ValueError("Load a valid PKI project first.")
-            if not self.iip.text().strip(): raise ValueError("Device IP address is required for the FlexEdge profile.")
+            mode, role = self._selected_issue_mode()
+            if mode == "opcua":
+                raise ValueError("OPC UA issuance is coming soon and is not yet implemented.")
             ca_password = self.icapass.text()
             if self.project.ca_key_encrypted is True and not ca_password:
                 value, accepted = QInputDialog.getText(
                     self,
                     "CA password required",
-                    "This PKI project uses encrypted CA keys. Enter the CA password to issue a device certificate:",
+                    "This PKI project uses encrypted CA keys. Enter the CA password to issue a certificate:",
                     QLineEdit.Password,
                 )
                 if not accepted:
-                    raise ValueError("Device-certificate issuance was cancelled.")
+                    raise ValueError("Certificate issuance was cancelled.")
                 ca_password = value
                 if not ca_password:
-                    raise ValueError("Enter the CA password to issue a device certificate.")
+                    raise ValueError("Enter the CA password to issue a certificate.")
                 self.icapass.setText(ca_password)
-            return self.engine.issue_server(self.project.path, Path(self.iout.text()), Subject(self.icn.text(), self.project.organization), self.sans(self.isans), ca_password, "", digest=self.project.pki_digest, key_type=self.project.pki_key_type, key_size_or_curve=self.project.pki_key_size_or_curve, days=self.project.pki_validity_days)
+
+            sans_values = self.sans(self.isans)
+            if mode == "crimson":
+                if not self.iip.text().strip():
+                    raise ValueError("Device IP address is required for the Crimson HTTPS profile.")
+                return self.engine.issue_server(
+                    self.project.path,
+                    Path(self.iout.text()),
+                    Subject(self.icn.text(), self.project.organization),
+                    sans_values,
+                    ca_password,
+                    "",
+                    digest=self.project.pki_digest,
+                    key_type=self.project.pki_key_type,
+                    key_size_or_curve=self.project.pki_key_size_or_curve,
+                    days=int(self.issue_days.value()),
+                )
+
+            key_password = self.chosen_password(
+                self.issue_keyprotect,
+                self.issue_keypass,
+                self.issue_keypassconfirm,
+                "issued",
+            )
+            if role == "broker":
+                if not sans_values:
+                    raise ValueError("Provide at least one DNS name or IP address for the MQTT broker certificate SAN list.")
+                return self.engine.issue_mqtt_broker(
+                    self.project.path,
+                    Path(self.iout.text()),
+                    Subject(self.icn.text(), self.project.organization),
+                    sans_values,
+                    ca_password,
+                    key_password,
+                    mutual_tls=self.mqtt_mutual_tls.isChecked(),
+                    days=int(self.issue_days.value()),
+                    digest=self.project.pki_digest,
+                    key_type=self.project.pki_key_type,
+                    key_size_or_curve=self.project.pki_key_size_or_curve,
+                )
+
+            client_id = self.iclientid.text().strip()
+            if not client_id:
+                raise ValueError("MQTT Client ID is required for MQTT client certificates.")
+            return self.engine.issue_mqtt_client(
+                self.project.path,
+                Path(self.iout.text()),
+                Subject(self.icn.text(), self.project.organization),
+                sans_values,
+                ca_password,
+                key_password,
+                days=int(self.issue_days.value()),
+                digest=self.project.pki_digest,
+                key_type=self.project.pki_key_type,
+                key_size_or_curve=self.project.pki_key_size_or_curve,
+            )
         self.guard(work)
 
 

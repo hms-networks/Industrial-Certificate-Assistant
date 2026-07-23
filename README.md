@@ -4,6 +4,24 @@ Cross-platform guided PKI utility for FlexEdge HTTPS certificates and future
 industrial TLS profiles. Cryptographic operations are performed by OpenSSL;
 the desktop interface is built with Python and PySide6.
 
+## Version 0.5.0 milestone
+
+- Added protocol-aware issuance workflows for:
+  - Crimson 3.2 HTTPS server certificates
+  - MQTT broker certificates
+  - MQTT client/device certificates
+- Added MQTT broker packaging outputs with Mosquitto-ready TLS artifacts:
+  - `mosquitto-tls.conf`
+  - `install-mosquitto-tls.sh`
+  - `remove-mosquitto-tls.sh`
+  - `verify-mqtt-tls.sh`
+- Added profile-aware issuance metadata and richer certificate validation
+  reports, including EKU/KU, signature details, key details, SANs, chain
+  validation, and generated file inventory.
+- Added project folder support for `mqtt/brokers` and `mqtt/clients`.
+- Added MQTT-focused unit tests for issuance, SAN validation/deduplication,
+  script generation, and safety controls.
+
 ## Version 0.4.1 milestone
 
 - Detect and report the OpenSSL installation.
@@ -114,6 +132,9 @@ Industrial_Certs/
 ├── intermediate-ca/
 ├── pending-requests/
 ├── devices/
+├── mqtt/
+│   ├── brokers/
+│   └── clients/
 ├── trust-installers/
 ├── backups/
 └── reports/

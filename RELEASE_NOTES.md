@@ -1,3 +1,23 @@
+# Version 0.5.0
+
+- Added protocol-aware certificate issuance while preserving existing
+  Crimson 3.2 HTTPS issuance behavior.
+- Added MQTT broker issuance with SAN validation, deduplication, and
+  broker-specific output naming.
+- Added MQTT client/device issuance with `clientAuth` EKU and client
+  identity-oriented defaults.
+- Added project structure support for `mqtt/brokers` and `mqtt/clients`.
+- Added Mosquitto broker packaging artifacts:
+  - `mosquitto-tls.conf`
+  - `install-mosquitto-tls.sh`
+  - `remove-mosquitto-tls.sh`
+  - `verify-mqtt-tls.sh`
+- Added richer certificate report output including protocol/role/profile
+  metadata, KU/EKU, signature and key information, chain validation,
+  encryption state, and generated file lists.
+- Added tests for MQTT profiles, issuance paths, SAN handling,
+  Mosquitto script content, encryption modes, and report hygiene.
+
 # Version 0.4.1
 
 - Licensed the project under Apache License 2.0 with HMS Networks as the
