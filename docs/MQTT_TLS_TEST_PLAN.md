@@ -87,6 +87,40 @@ mosquitto_pub -h <broker-host> -p 8883 --cafile root-ca.pem --cert client-certif
 - OpenSSL `s_client` output showing subject/issuer/SAN
 - Successful and failed mutual TLS attempts
 
+## UI Smoke Test Checklist
+1. Launch the application and confirm masthead shows version 0.5.0.
+2. Open ISSUE and verify the navigation label reads Issue protocol certificate.
+3. Select Crimson 3.2 HTTPS Server and verify the package preview shows `certificate.pem`, `private-key.pem`, and `fullchain.pem`.
+4. Select MQTT Broker and verify MQTT Role is visible and defaults to Broker.
+5. Enter broker name and DNS/IP values and verify:
+  - Automatic Common Name updates
+  - SAN list updates and deduplicates values
+  - Output folder points to `mqtt/brokers/<broker-name>`
+6. Toggle Enable mutual TLS and verify preview text changes to indicate mutual TLS enabled.
+7. Verify broker preview includes:
+  - `mosquitto-tls.conf`
+  - `install-mosquitto-tls.sh`
+  - `remove-mosquitto-tls.sh`
+  - `verify-mqtt-tls.sh`
+8. Select MQTT Client/Device and verify:
+  - MQTT Client ID field is visible
+  - Output folder points to `mqtt/clients/<client-id>`
+  - Preview lists `client-certificate.pem` and `client-private-key.pem`
+9. Select OPC UA Application (coming soon) and verify issue action is disabled.
+10. Return to Crimson profile and verify issue action re-enables.
+
+## Screenshot Targets (Exact Captures)
+- SHOT-MQTT-001: ISSUE page with Protocol/Profile set to MQTT Broker and MQTT Role visible.
+- SHOT-MQTT-002: ISSUE page showing Broker SAN values and output folder under `mqtt/brokers`.
+- SHOT-MQTT-003: Package preview panel showing Mosquitto files and safety notes.
+- SHOT-MQTT-004: ISSUE page with mutual TLS enabled and preview reflecting the setting.
+- SHOT-MQTT-005: ISSUE page with Protocol/Profile set to MQTT Client/Device and Client ID populated.
+- SHOT-MQTT-006: Output folder view showing generated broker package files.
+- SHOT-MQTT-007: Output folder view showing generated client package files.
+- SHOT-MQTT-008: `mosquitto-tls.conf` opened, with `listener 8883` and `allow_anonymous false` visible.
+- SHOT-MQTT-009: OpenSSL verification output (`s_client`) showing chain and SAN details.
+- SHOT-MQTT-010: Successful publish/subscribe result and one negative-path failure capture.
+
 ## Completion Checklist
 - [ ] Existing HTTPS workflow still passes regression tests.
 - [ ] MQTT broker issuance creates expected files.

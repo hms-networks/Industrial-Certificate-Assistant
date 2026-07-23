@@ -502,6 +502,8 @@ class MainWindow(QMainWindow):
         self.iout = QLineEdit(readOnly=True); self.icapass = self.password_field()
         self.issue_days = QSpinBox(); self.issue_days.setRange(1, 3650); self.issue_days.setValue(397)
         self.mqtt_mutual_tls = QCheckBox("Enable mutual TLS (require client certificate)")
+        self.issue_preview = QTextEdit(readOnly=True)
+        self.issue_preview.setMinimumHeight(150)
         self.set_help(self.iws, "Project workspace containing the issuing CA certificates and keys.")
         self.set_help(self.issue_protocol, "Choose which certificate profile to issue.")
         self.set_help(self.mqtt_role, "Broker certificates identify MQTT servers; client certificates identify connecting devices.")
@@ -517,11 +519,14 @@ class MainWindow(QMainWindow):
         self.set_help(self.icapass, "Password for encrypted CA keys. Leave blank only for unencrypted CA keys.")
         self.set_help(self.issue_days, "Issued certificate validity period in days.")
         self.set_help(self.mqtt_mutual_tls, "Mutual TLS authenticates both sides. Never upload CA private keys to Mosquitto or industrial devices.")
+        self.set_help(self.issue_preview, "Preview of expected output files for the selected protocol package.")
         for field in (self.idevice, self.iclientid, self.icn_override, self.iip, self.idns, self.iextra):
             field.textChanged.connect(self.update_issue_defaults)
         self.issue_protocol.currentTextChanged.connect(self.update_issue_defaults)
         self.issue_protocol.currentTextChanged.connect(self.update_issue_mode)
         self.mqtt_role.currentTextChanged.connect(self.sync_issue_protocol_from_role)
+        self.issue_days.valueChanged.connect(self.update_issue_preview)
+        self.mqtt_mutual_tls.toggled.connect(self.update_issue_preview)
 
         form.addRow("PKI project workspace", wsw)
         form.addRow("Protocol/Profile", self.issue_protocol)
@@ -543,6 +548,7 @@ class MainWindow(QMainWindow):
         form.addRow("Certificate validity (days)", self.issue_days)
         form.addRow(self.mqtt_mutual_tls)
         form.addRow("Automatic output folder", self.iout)
+        form.addRow("Package preview", self.issue_preview)
         note = QLabel(
             "Broker certificates identify MQTT servers, and client certificates identify connecting devices. "
             "DNS/IP SANs must match the exact address used by clients. Keep CA private keys protected and never upload them to Mosquitto or industrial devices. "
@@ -793,6 +799,85 @@ class MainWindow(QMainWindow):
         self.isans.setText(", ".join(values))
         self.iorg.setText(self.project.organization)
         self.iout.setText(str(output))
+        self.update_issue_preview()
+
+    def update_issue_preview(self):
+        if not hasattr(self, "issue_preview"):
+            return
+        mode, role = self._selected_issue_mode() if hasattr(self, "issue_protocol") else ("crimson", "server")
+        out = self.iout.text().strip() if hasattr(self, "iout") else "<output-folder>"
+        if not out:
+            out = "<output-folder>"
+        base = Path(out)
+
+        if mode == "crimson":
+            files = [
+                "certificate.pem",
+                "private-key.pem",
+                "fullchain.pem",
+                "ca-chain.pem",
+                "intermediate-ca.pem",
+                "root-ca.pem",
+                "certificate.ext",
+                "request.csr.pem",
+                "certificate-report.txt",
+                "trust-installers/install-trust-windows.ps1",
+                "trust-installers/remove-trust-windows.ps1",
+                "trust-installers/install-trust-linux.sh",
+                "trust-installers/remove-trust-linux.sh",
+            ]
+            header = "Crimson 3.2 HTTPS package preview"
+        elif role == "broker":
+            files = [
+                "broker-certificate.pem",
+                "broker-private-key.pem",
+                "broker-fullchain.pem",
+                "ca-chain.pem",
+                "intermediate-ca.pem",
+                "root-ca.pem",
+                "broker-certificate.ext",
+                "broker-request.csr.pem",
+                "certificate-report.txt",
+                "mosquitto-tls.conf",
+                "install-mosquitto-tls.sh",
+                "remove-mosquitto-tls.sh",
+                "verify-mqtt-tls.sh",
+                "trust-installers/install-trust-windows.ps1",
+                "trust-installers/remove-trust-windows.ps1",
+                "trust-installers/install-trust-linux.sh",
+                "trust-installers/remove-trust-linux.sh",
+            ]
+            mtls = "enabled" if self.mqtt_mutual_tls.isChecked() else "disabled"
+            header = f"MQTT broker package preview (mutual TLS {mtls})"
+        else:
+            files = [
+                "client-certificate.pem",
+                "client-private-key.pem",
+                "client-fullchain.pem",
+                "ca-chain.pem",
+                "intermediate-ca.pem",
+                "root-ca.pem",
+                "client-certificate.ext",
+                "client-request.csr.pem",
+                "certificate-report.txt",
+                "trust-installers/install-trust-windows.ps1",
+                "trust-installers/remove-trust-windows.ps1",
+                "trust-installers/install-trust-linux.sh",
+                "trust-installers/remove-trust-linux.sh",
+            ]
+            header = "MQTT client/device package preview"
+
+        lines = [header, f"Output: {base}", "", "Files:"]
+        lines.extend(f"- {base / name}" for name in files)
+        if mode == "mqtt" and role == "broker":
+            lines.extend([
+                "",
+                "Safety notes:",
+                "- Root and intermediate CA private keys are never copied to Mosquitto.",
+                "- Generated TLS fragment sets listener 8883 and allow_anonymous false.",
+                "- Port 1883 should not be publicly exposed.",
+            ])
+        self.issue_preview.setPlainText("\n".join(lines))
 
     def guard(self, action):
         if not self.engine:
