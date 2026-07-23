@@ -7,13 +7,15 @@ import ipaddress
 import re
 import secrets
 import sys
+import ctypes
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, QSignalBlocker, Qt
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QInputDialog, QCheckBox,
-    QTextEdit, QVBoxLayout, QWidget, QScrollArea, QFrame, QButtonGroup, QSizePolicy, QComboBox, QSpinBox)
+    QTextEdit, QVBoxLayout, QWidget, QScrollArea, QFrame, QButtonGroup, QSizePolicy, QComboBox, QSpinBox,
+    QSplashScreen)
 
 from ica.openssl_engine import OpenSSLEngine, OpenSSLError, Subject, is_encrypted_private_key
 from ica.project import Project, safe_name
@@ -26,6 +28,32 @@ def get_resource(name: str) -> str:
     if hasattr(sys, '_MEIPASS'):
         return Path(sys._MEIPASS) / name
     return Path(__file__).parent / name
+
+
+def set_windows_app_id() -> None:
+    """Set a stable Windows AppUserModelID so the taskbar uses the HMS icon."""
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "HMS.IndustrialCertificateAssistant"
+        )
+    except Exception:
+        pass
+
+
+def create_startup_splash(icon: QIcon) -> QSplashScreen | None:
+    banner_path = get_resource("HMS_banner.png")
+    if not banner_path.is_file():
+        return None
+    pixmap = QPixmap(str(banner_path))
+    if pixmap.isNull():
+        return None
+    splash = QSplashScreen(pixmap)
+    splash.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+    splash.setWindowIcon(icon)
+    splash.show()
+    return splash
 
 
 class MainWindow(QMainWindow):
@@ -730,7 +758,21 @@ class MainWindow(QMainWindow):
 
 
 def main():
-    app = QApplication(sys.argv); app.setStyle("Fusion"); window = MainWindow(); window.show(); return app.exec()
+    set_windows_app_id()
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    app_icon = QIcon(str(get_resource("HMS.ico")))
+    if not app_icon.isNull():
+        app.setWindowIcon(app_icon)
+    splash = create_startup_splash(app_icon)
+    app.processEvents()
+    window = MainWindow()
+    if not app_icon.isNull():
+        window.setWindowIcon(app_icon)
+    window.show()
+    if splash is not None:
+        splash.finish(window)
+    return app.exec()
 
 
 if __name__ == "__main__": raise SystemExit(main())

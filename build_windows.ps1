@@ -36,6 +36,8 @@ if (Test-Path ".\vendor\openssl\windows\openssl.exe") {
 
 $iconArg = @()
 $iconDataArg = @()
+$bannerDataArg = @()
+$splashArg = @()
 $iconName = $null
 
 if (Test-Path ".\HMS.ico") {
@@ -51,6 +53,14 @@ if ($iconName) {
     Write-Warning "No icon file found (expected HMS.ico or hms.ico)."
 }
 
+if (Test-Path ".\HMS_banner.png") {
+    $bannerDataArg = @("--add-data", "HMS_banner.png;.")
+    $splashArg = @("--splash", "HMS_banner.png")
+} elseif (Test-Path ".\HMS_Banner.png") {
+    $bannerDataArg = @("--add-data", "HMS_Banner.png;.")
+    $splashArg = @("--splash", "HMS_Banner.png")
+}
+
 # Build the executable
 python -m PyInstaller `
     --noconfirm `
@@ -60,7 +70,9 @@ python -m PyInstaller `
     --name IndustrialCertificateAssistant `
     @extraArgs `
     @iconDataArg `
+    @bannerDataArg `
     @iconArg `
+    @splashArg `
     app.py
 
 Write-Host "Built dist\IndustrialCertificateAssistant.exe"
