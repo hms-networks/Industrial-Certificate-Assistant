@@ -39,3 +39,4 @@ openssl_binaries/windows/PEM/*.pem
 openssl_binaries/
 vendor/openssl/windows/*.exe
 vendor/openssl/windows/*.dll
+*.pem

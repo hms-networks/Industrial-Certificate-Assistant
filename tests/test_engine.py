@@ -5,7 +5,7 @@ import json
 from inspect import signature
 from pathlib import Path
 
-from ica.openssl_engine import OpenSSLEngine, Subject, normalize_sans
+from ica.openssl_engine import OpenSSLEngine, Subject, normalize_application_uri, normalize_sans
 from ica.profiles import PROFILES
 from ica.project import Project
 
@@ -364,3 +364,53 @@ def test_report_and_manifest_do_not_contain_passwords(tmp_path: Path):
     manifest_text = project.manifest.read_text(encoding="utf-8")
     assert "s3cret-password" not in report_text
     assert "s3cret-password" not in manifest_text
+
+
+def test_opcua_profile_and_application_uri_validation():
+    profile = PROFILES["opcua_server"]
+    assert profile.extended_key_usage == ("serverAuth", "clientAuth")
+    assert profile.key_usage == ("digitalSignature", "keyEncipherment")
+    assert normalize_application_uri("urn:red-0b-bd-84.local:server") == "urn:red-0b-bd-84.local:server"
+    try:
+        normalize_application_uri("https://red-0b-bd-84.local")
+    except ValueError as exc:
+        assert "Application URI" in str(exc)
+    else:
+        raise AssertionError("A non-URN OPC UA ApplicationUri should be rejected")
+
+
+def test_issue_opcua_server_package_with_crl(tmp_path: Path):
+    engine = OpenSSLEngine()
+    workspace = tmp_path / "opcua pki"
+    project = Project(str(workspace), "AEP", "AEP OPC UA PKI", "local")
+    project.save()
+    engine.create_pki(workspace, Subject("AEP Root", "AEP"), Subject("AEP Issuing", "AEP"), "")
+
+    result = engine.issue_opcua_server(
+        workspace,
+        project.opcua_server_folder("red-0b-bd-84"),
+        Subject("red-0b-bd-84.local", "AEP"),
+        ["red-0b-bd-84.local", "10.124.214.65"],
+        "urn:red-0b-bd-84.local:server",
+        "",
+        "",
+    )
+
+    cert_text = engine.inspect_certificate(result["certificate"])
+    assert "URI:urn:red-0b-bd-84.local:server" in cert_text
+    assert "DNS:red-0b-bd-84.local" in cert_text
+    assert "IP Address:10.124.214.65" in cert_text
+    assert "TLS Web Server Authentication" in cert_text
+    assert "TLS Web Client Authentication" in cert_text
+    assert result["certificate_der"].read_bytes().startswith(b"0")
+    assert result["crl_der"].read_bytes().startswith(b"0")
+    assert result["root_der"].exists()
+    assert result["intermediate_der"].exists()
+    assert result["installation_guide"].exists()
+    assert "OK" in engine.verify_chain(result["certificate"], result["ca_chain"])
+
+
+def test_opcua_project_folder_created(tmp_path: Path):
+    project = Project(str(tmp_path / "opcua-structure"), "AEP")
+    project.save()
+    assert (project.path / "opcua" / "servers").is_dir()

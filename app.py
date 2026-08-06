@@ -83,7 +83,7 @@ class MainWindow(QMainWindow):
         masthead_layout = QHBoxLayout(masthead); masthead_layout.setContentsMargins(20, 10, 18, 10)
         brand = QVBoxLayout(); brand.setSpacing(1)
         title = QLabel("Industrial Certificate Assistant"); title.setObjectName("brandTitle")
-        subtitle = QLabel("Guided SSL/TLS Management for Crimson 3.2 and MQTT Workflows"); subtitle.setObjectName("brandSubtitle")
+        subtitle = QLabel("Guided PKI Management for Crimson 3.2, MQTT, and OPC UA"); subtitle.setObjectName("brandSubtitle")
         brand.addWidget(title); brand.addWidget(subtitle)
         masthead_layout.addLayout(brand); masthead_layout.addStretch(1)
         self.theme_toggle = QPushButton("Dark mode")
@@ -486,17 +486,18 @@ class MainWindow(QMainWindow):
     def issue_page(self):
         page, form = self.workflow_page(
             "Issue a protocol certificate",
-            "Issue and package certificates for Crimson HTTPS and MQTT broker/client workflows using the loaded PKI project.")
+            "Issue and package certificates for Crimson HTTPS, MQTT, and OPC UA workflows using the loaded PKI project.")
         wsw, self.iws = self.path_field(True, self.load_project)
         self.issue_protocol = QComboBox()
         self.issue_protocol.addItems([
             "Crimson 3.2 HTTPS Server",
             "MQTT Broker",
             "MQTT Client/Device",
-            "OPC UA Application (coming soon)",
+            "OPC UA Server",
         ])
         self.mqtt_role = QComboBox(); self.mqtt_role.addItems(["Broker", "Client/Device"])
         self.idevice = QLineEdit(); self.iclientid = QLineEdit(); self.icn_override = QLineEdit()
+        self.iapplication_uri = QLineEdit()
         self.iip = QLineEdit(); self.idns = QLineEdit(); self.iextra = QLineEdit()
         self.icn = QLineEdit(readOnly=True); self.iorg = QLineEdit(readOnly=True); self.isans = QLineEdit(readOnly=True)
         self.iout = QLineEdit(readOnly=True); self.icapass = self.password_field()
@@ -509,6 +510,7 @@ class MainWindow(QMainWindow):
         self.set_help(self.mqtt_role, "Broker certificates identify MQTT servers; client certificates identify connecting devices.")
         self.set_help(self.idevice, "Device or broker name used for folder naming and default certificate identity.")
         self.set_help(self.iclientid, "MQTT Client ID. Required for MQTT client certificates.")
+        self.set_help(self.iapplication_uri, "OPC UA ApplicationUri. It must exactly match the server endpoint identity, for example urn:device.local:server.")
         self.set_help(self.icn_override, "Optional explicit Common Name override. Leave blank to use protocol defaults.")
         self.set_help(self.iip, "Optional or required IP address depending on profile.")
         self.set_help(self.idns, "Primary DNS name used by clients to connect to this broker or endpoint.")
@@ -520,7 +522,7 @@ class MainWindow(QMainWindow):
         self.set_help(self.issue_days, "Issued certificate validity period in days.")
         self.set_help(self.mqtt_mutual_tls, "Mutual TLS authenticates both sides. Never upload CA private keys to Mosquitto or industrial devices.")
         self.set_help(self.issue_preview, "Preview of expected output files for the selected protocol package.")
-        for field in (self.idevice, self.iclientid, self.icn_override, self.iip, self.idns, self.iextra):
+        for field in (self.idevice, self.iclientid, self.icn_override, self.iapplication_uri, self.iip, self.idns, self.iextra):
             field.textChanged.connect(self.update_issue_defaults)
         self.issue_protocol.currentTextChanged.connect(self.update_issue_defaults)
         self.issue_protocol.currentTextChanged.connect(self.update_issue_mode)
@@ -533,6 +535,7 @@ class MainWindow(QMainWindow):
         form.addRow("MQTT Role", self.mqtt_role)
         form.addRow("Device/Broker name", self.idevice)
         form.addRow("MQTT Client ID", self.iclientid)
+        form.addRow("OPC UA Application URI", self.iapplication_uri)
         form.addRow("Primary DNS name", self.idns)
         form.addRow("Primary IP address", self.iip)
         form.addRow("Additional DNS names or IPs", self.iextra)
@@ -727,6 +730,7 @@ class MainWindow(QMainWindow):
     def update_issue_mode(self):
         mode, role = self._selected_issue_mode()
         is_mqtt = mode == "mqtt"
+        is_opcua = mode == "opcua"
         is_client = role == "client"
 
         if self.issue_protocol.currentText() == "MQTT Broker" and self.mqtt_role.currentText() != "Broker":
@@ -738,23 +742,21 @@ class MainWindow(QMainWindow):
 
         self._set_row_visible(self.mqtt_role, is_mqtt)
         self._set_row_visible(self.iclientid, is_client)
-        self._set_row_visible(self.icn_override, is_mqtt)
-        self._set_row_visible(self.issue_keyprotect, is_mqtt)
-        self._set_row_visible(self.issue_keypass, is_mqtt and self.issue_keyprotect.isChecked())
-        self._set_row_visible(self.issue_keypassconfirm, is_mqtt and self.issue_keyprotect.isChecked())
-        self._set_row_visible(self.issue_keycontrols, is_mqtt and self.issue_keyprotect.isChecked())
+        self._set_row_visible(self.iapplication_uri, is_opcua)
+        self._set_row_visible(self.icn_override, is_mqtt or is_opcua)
+        protects_key = is_mqtt or is_opcua
+        self._set_row_visible(self.issue_keyprotect, protects_key)
+        self._set_row_visible(self.issue_keypass, protects_key and self.issue_keyprotect.isChecked())
+        self._set_row_visible(self.issue_keypassconfirm, protects_key and self.issue_keyprotect.isChecked())
+        self._set_row_visible(self.issue_keycontrols, protects_key and self.issue_keyprotect.isChecked())
         self._set_row_visible(self.issue_days, True)
         self.mqtt_mutual_tls.setVisible(is_mqtt and role == "broker")
         self._set_row_visible(self.idns, True)
         self._set_row_visible(self.iip, True)
         self._set_row_visible(self.iextra, True)
 
-        if mode == "opcua":
-            self.issue_action.setEnabled(False)
-            self.issue_action.setText("OPC UA issuance coming soon")
-        else:
-            self.issue_action.setEnabled(True)
-            self.issue_action.setText("Issue protocol certificate package")
+        self.issue_action.setEnabled(True)
+        self.issue_action.setText("Issue protocol certificate package")
         self.update_issue_defaults()
 
     def update_issue_defaults(self):
@@ -775,6 +777,16 @@ class MainWindow(QMainWindow):
             else:
                 cn_value = ""
                 output = Path(self.project.workspace)
+        elif mode == "opcua":
+            suffix = dns_name.strip(".") or self.project.dns_suffix
+            host = (name if "." in name else f"{name}.{suffix}").lower() if name else dns_name
+            if host:
+                values.append(host)
+            cn_value = self.icn_override.text().strip() or host
+            output = self.project.opcua_server_folder(name) if name else Path(self.project.workspace) / "opcua" / "servers"
+            if host and not self.iapplication_uri.text().strip():
+                with QSignalBlocker(self.iapplication_uri):
+                    self.iapplication_uri.setText(f"urn:{host}:server")
         elif role == "broker":
             if dns_name:
                 values.append(dns_name)
@@ -827,6 +839,19 @@ class MainWindow(QMainWindow):
                 "trust-installers/remove-trust-linux.sh",
             ]
             header = "Crimson 3.2 HTTPS package preview"
+        elif mode == "opcua":
+            files = [
+                "server-certificate.pem", "server-certificate.der",
+                "server-private-key.pem", "server-fullchain.pem",
+                "ca-chain.pem", "intermediate-ca.pem", "root-ca.pem",
+                "server-certificate.ext", "server-request.csr.pem",
+                "certificate-report.txt", "OPC-UA-INSTALLATION.txt",
+                "opcua-trust/trusted/certs/root-ca.der",
+                "opcua-trust/issuers/certs/intermediate-ca.der",
+                "opcua-trust/issuers/crl/intermediate-ca.crl.pem",
+                "opcua-trust/issuers/crl/intermediate-ca.crl.der",
+            ]
+            header = f"OPC UA server package preview ({self.iapplication_uri.text().strip() or 'Application URI required'})"
         elif role == "broker":
             files = [
                 "broker-certificate.pem",
@@ -949,8 +974,6 @@ class MainWindow(QMainWindow):
         def work():
             if not self.project: raise ValueError("Load a valid PKI project first.")
             mode, role = self._selected_issue_mode()
-            if mode == "opcua":
-                raise ValueError("OPC UA issuance is coming soon and is not yet implemented.")
             ca_password = self.icapass.text()
             if self.project.ca_key_encrypted is True and not ca_password:
                 value, accepted = QInputDialog.getText(
@@ -967,6 +990,22 @@ class MainWindow(QMainWindow):
                 self.icapass.setText(ca_password)
 
             sans_values = self.sans(self.isans)
+            if mode == "opcua":
+                application_uri = self.iapplication_uri.text().strip()
+                if not self.idevice.text().strip() or not self.idns.text().strip():
+                    raise ValueError("Device name and primary DNS name are required for OPC UA.")
+                if not application_uri:
+                    raise ValueError("OPC UA Application URI is required.")
+                key_password = self.chosen_password(
+                    self.issue_keyprotect, self.issue_keypass, self.issue_keypassconfirm, "OPC UA")
+                return self.engine.issue_opcua_server(
+                    self.project.path, Path(self.iout.text()),
+                    Subject(self.icn.text(), self.project.organization), sans_values,
+                    application_uri, ca_password, key_password,
+                    days=int(self.issue_days.value()), digest=self.project.pki_digest,
+                    key_type=self.project.pki_key_type,
+                    key_size_or_curve=self.project.pki_key_size_or_curve,
+                )
             if mode == "crimson":
                 if not self.iip.text().strip():
                     raise ValueError("Device IP address is required for the Crimson HTTPS profile.")
