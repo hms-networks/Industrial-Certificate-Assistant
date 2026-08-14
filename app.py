@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QApplication, QFileDialog, QFormLayout, QHBoxLayo
 from ica.openssl_engine import OpenSSLEngine, OpenSSLError, Subject, is_encrypted_private_key
 from ica.project import Project, safe_name
 from ica.trust_scripts import create_trust_bundle
-from ica import __version__
+from app_version import APP_VERSION as __version__
 
 try:
     import pyi_splash

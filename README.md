@@ -147,3 +147,57 @@ Passwords are never stored in `ica-project.json`.
 Copyright 2026 HMS Networks. Licensed under the Apache License 2.0. See
 `LICENSE` and `NOTICE`. OpenSSL redistribution information is documented in
 `THIRD_PARTY_NOTICES.md`.
+Industrial Certificate Assistant build files (version 0.7.0)
+
+Place these files beside app.py and requirements.txt:
+
+  build_windows.ps1
+  build_windows.bat
+  build_linux.sh
+  pyi_rth_openssl.py
+  app_version.py
+
+Windows:
+  Run build_windows.bat, or run build_windows.ps1 directly.
+
+Linux:
+  chmod +x build_linux.sh
+  ./build_linux.sh
+
+Application version label:
+  Replace any hard-coded GUI version with:
+
+      from app_version import APP_VERSION
+
+  Then use APP_VERSION wherever the GUI displays the release number.
+
+The Windows build embeds 0.7.0.0 in EXE file metadata and bundles VERSION.txt.
+The runtime hook points bundled OpenSSL at its bundled openssl.cnf before app.py starts.
+
+Industrial Certificate Assistant build files (version 0.7.0)
+
+Place these files beside app.py and requirements.txt:
+
+  build_windows.ps1
+  build_windows.bat
+  build_linux.sh
+  pyi_rth_openssl.py
+  app_version.py
+
+Windows:
+  Run build_windows.bat, or run build_windows.ps1 directly.
+
+Linux:
+  chmod +x build_linux.sh
+  ./build_linux.sh
+
+Application version label:
+  Replace any hard-coded GUI version with:
+
+      from app_version import APP_VERSION
+
+  Then use APP_VERSION wherever the GUI displays the release number.
+
+The Windows build embeds 0.7.0.0 in EXE file metadata and bundles VERSION.txt.
+The runtime hook points bundled OpenSSL at its bundled openssl.cnf before app.py starts.
+When a splash image is present, the builders install Pillow if it is not already available.
