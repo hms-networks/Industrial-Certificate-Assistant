@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import re
 from inspect import signature
 from pathlib import Path
 
@@ -90,6 +91,84 @@ def test_full_pki(tmp_path: Path):
     assert result["fullchain"].read_text().count("BEGIN CERTIFICATE") == 2
     assert result["windows_install"].exists()
     assert result["linux_install"].exists()
+
+
+def test_issue_ram_https_package(tmp_path: Path):
+    engine = OpenSSLEngine()
+    workspace = tmp_path / "ram-pki"
+    project = Project(str(workspace), "GregNet", "RAM PKI", "local")
+    project.save()
+    engine.create_pki(
+        workspace,
+        Subject("GregNet Industrial Root CA", "GregNet"),
+        Subject("GregNet Industrial Device Issuing CA", "GregNet"),
+        "",
+        root_days=5475,
+        intermediate_days=3650,
+    )
+
+    result = engine.issue_ram_https(
+        workspace,
+        project.device_folder("RAMTEST01"),
+        Subject("RAMTEST01", "GregNet"),
+        ["192.168.1.10", "ramtest01.example.local", "2001:db8::10"],
+        "",
+        "",
+        days=3500,
+    )
+
+    assert "2048 bit" in engine.inspect_certificate(result["certificate"])
+    assert result["private_key_rsa"].read_text().startswith("-----BEGIN RSA PRIVATE KEY-----")
+    deployment = result["ram_https"].read_bytes()
+    assert deployment.count(b"BEGIN CERTIFICATE") == 2
+    assert deployment.count(b"BEGIN RSA PRIVATE KEY") == 1
+    assert deployment.find(b"BEGIN CERTIFICATE") < deployment.find(b"BEGIN RSA PRIVATE KEY")
+    assert project.device_folder("RAMTEST01").joinpath("root-ca.pem").read_bytes() not in deployment
+    assert result["readme_ram_https"].exists()
+
+
+def test_ram_reissue_reuses_key_and_archives_previous_certificate(tmp_path: Path):
+    engine = OpenSSLEngine()
+    workspace = tmp_path / "ram-reissue-pki"
+    project = Project(str(workspace), "GregNet", "RAM PKI", "local")
+    project.save()
+    engine.create_pki(
+        workspace,
+        Subject("GregNet Root CA", "GregNet"),
+        Subject("GregNet Issuing CA", "GregNet"),
+        "",
+        root_days=5475,
+        intermediate_days=3650,
+    )
+    output = project.device_folder("RAMTEST01")
+    first = engine.issue_ram_https(workspace, output, Subject("RAMTEST01", "GregNet"), ["192.168.1.10"], "", "", days=3500)
+    old_key = first["private_key"].read_bytes()
+    old_serial = re.search(r"Serial Number:\s*([0-9a-f:]+)", engine.inspect_certificate(first["certificate"]), re.IGNORECASE).group(1)
+
+    second = engine.issue_ram_https(
+        workspace, output, Subject("RAMTEST01", "GregNet"),
+        ["192.168.1.10", "166.149.166.97"], "", "", days=3500, reissue="existing",
+    )
+
+    assert second["private_key"].read_bytes() == old_key
+    assert "166.149.166.97" in engine.inspect_certificate(second["certificate"])
+    assert old_serial != re.search(r"Serial Number:\s*([0-9a-f:]+)", engine.inspect_certificate(second["certificate"]), re.IGNORECASE).group(1)
+    assert second["archive"].joinpath("certificate.pem").exists()
+    assert engine.verify_key_matches(second["certificate"], second["private_key"], "")
+
+
+def test_ram_reissue_with_new_key_archives_old_key(tmp_path: Path):
+    engine = OpenSSLEngine()
+    workspace = tmp_path / "ram-new-key-pki"
+    project = Project(str(workspace), "GregNet", "RAM PKI", "local")
+    project.save()
+    engine.create_pki(workspace, Subject("GregNet Root", "GregNet"), Subject("GregNet Issuing", "GregNet"), "", root_days=5475, intermediate_days=3650)
+    output = project.device_folder("RAMTEST02")
+    first = engine.issue_ram_https(workspace, output, Subject("RAMTEST02", "GregNet"), ["10.0.0.2"], "", "", days=3500)
+    old_key = first["private_key"].read_bytes()
+    second = engine.issue_ram_https(workspace, output, Subject("RAMTEST02", "GregNet"), ["10.0.0.3"], "", "", days=3500, reissue="new")
+    assert second["private_key"].read_bytes() != old_key
+    assert second["archive"].joinpath("private-key.pem").read_bytes() == old_key
 
 
 def test_legacy_project_migration(tmp_path: Path):
@@ -245,6 +324,36 @@ def test_issue_mqtt_broker_package(tmp_path: Path):
     assert result["mosquitto_verify"].exists()
     assert "require_certificate true" in result["mosquitto_conf"].read_text(encoding="utf-8")
     assert "use_identity_as_username true" in result["mosquitto_conf"].read_text(encoding="utf-8")
+
+
+def test_mqtt_broker_reissue_reuses_key_and_archives_package(tmp_path: Path):
+    engine = OpenSSLEngine()
+    workspace = tmp_path / "mqtt-reissue"
+    project = Project(str(workspace), "MQTT Org", "MQTT PKI", "local")
+    project.save()
+    engine.create_pki(workspace, Subject("MQTT Root", "MQTT Org"), Subject("MQTT Issuing", "MQTT Org"), "")
+    output = project.mqtt_broker_folder("broker-01")
+    first = engine.issue_mqtt_broker(workspace, output, Subject("broker.local", "MQTT Org"), ["broker.local", "10.0.0.1"], "", "", days=3500)
+    old_key = first["private_key"].read_bytes()
+    second = engine.issue_mqtt_broker(workspace, output, Subject("broker.local", "MQTT Org"), ["broker.local", "10.0.0.2"], "", "", days=3500, reissue="existing")
+    assert second["private_key"].read_bytes() == old_key
+    assert second["archive"].joinpath("broker-private-key.pem").exists()
+    assert "10.0.0.2" in engine.inspect_certificate(second["certificate"])
+
+
+def test_opcua_reissue_reuses_key_and_archives_package(tmp_path: Path):
+    engine = OpenSSLEngine()
+    workspace = tmp_path / "opcua-reissue"
+    project = Project(str(workspace), "UA Org", "UA PKI", "local")
+    project.save()
+    engine.create_pki(workspace, Subject("UA Root", "UA Org"), Subject("UA Issuing", "UA Org"), "")
+    output = project.opcua_server_folder("server-01")
+    first = engine.issue_opcua_server(workspace, output, Subject("server.local", "UA Org"), ["server.local", "10.0.0.1"], "urn:server.local:server", "", "", days=3500)
+    old_key = first["private_key"].read_bytes()
+    second = engine.issue_opcua_server(workspace, output, Subject("server.local", "UA Org"), ["server.local", "10.0.0.2"], "urn:server.local:server", "", "", days=3500, reissue="existing")
+    assert second["private_key"].read_bytes() == old_key
+    assert second["archive"].joinpath("server-private-key.pem").exists()
+    assert "10.0.0.2" in engine.inspect_certificate(second["certificate"])
 
 
 def test_issue_mqtt_client_package(tmp_path: Path):

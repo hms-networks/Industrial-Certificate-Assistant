@@ -491,11 +491,17 @@ class MainWindow(QMainWindow):
         self.issue_protocol = QComboBox()
         self.issue_protocol.addItems([
             "Crimson 3.2 HTTPS Server",
+            "Red Lion RAM HTTPS Server",
             "MQTT Broker",
             "MQTT Client/Device",
             "OPC UA Server",
         ])
         self.mqtt_role = QComboBox(); self.mqtt_role.addItems(["Broker", "Client/Device"])
+        self.ram_reissue = QComboBox(); self.ram_reissue.addItems([
+            "New issuance",
+            "Reissue using existing private key",
+            "Reissue with new private key",
+        ])
         self.idevice = QLineEdit(); self.iclientid = QLineEdit(); self.icn_override = QLineEdit()
         self.iapplication_uri = QLineEdit()
         self.iip = QLineEdit(); self.idns = QLineEdit(); self.iextra = QLineEdit()
@@ -505,6 +511,9 @@ class MainWindow(QMainWindow):
         self.mqtt_mutual_tls = QCheckBox("Enable mutual TLS (require client certificate)")
         self.issue_preview = QTextEdit(readOnly=True)
         self.issue_preview.setMinimumHeight(150)
+        self.issue_ip_warning = QLabel("")
+        self.issue_ip_warning.setWordWrap(True)
+        self.issue_ip_warning.setStyleSheet("color: #9a3412; font-weight: 600;")
         self.set_help(self.iws, "Project workspace containing the issuing CA certificates and keys.")
         self.set_help(self.issue_protocol, "Choose which certificate profile to issue.")
         self.set_help(self.mqtt_role, "Broker certificates identify MQTT servers; client certificates identify connecting devices.")
@@ -527,6 +536,7 @@ class MainWindow(QMainWindow):
         self.issue_protocol.currentTextChanged.connect(self.update_issue_defaults)
         self.issue_protocol.currentTextChanged.connect(self.update_issue_mode)
         self.mqtt_role.currentTextChanged.connect(self.sync_issue_protocol_from_role)
+        self.ram_reissue.currentTextChanged.connect(self.update_issue_preview)
         self.issue_days.valueChanged.connect(self.update_issue_preview)
         self.mqtt_mutual_tls.toggled.connect(self.update_issue_preview)
 
@@ -552,6 +562,7 @@ class MainWindow(QMainWindow):
         form.addRow(self.mqtt_mutual_tls)
         form.addRow("Automatic output folder", self.iout)
         form.addRow("Package preview", self.issue_preview)
+        form.addRow("Address warning", self.issue_ip_warning)
         note = QLabel(
             "Broker certificates identify MQTT servers, and client certificates identify connecting devices. "
             "DNS/IP SANs must match the exact address used by clients. Keep CA private keys protected and never upload them to Mosquitto or industrial devices. "
@@ -560,6 +571,8 @@ class MainWindow(QMainWindow):
         note.setWordWrap(True); form.addRow(note)
         self.issue_action = self.primary_button("Issue protocol certificate package", self.issue)
         form.addRow(self.issue_action)
+        self.set_help(self.ram_reissue, "Choose whether to create a new RAM package, reuse its existing device key, or rotate the key. Previous issuance files are archived automatically.")
+        form.addRow("RAM issuance mode", self.ram_reissue)
         self.issue_form = form
         self.update_issue_mode()
         return page
@@ -712,6 +725,8 @@ class MainWindow(QMainWindow):
 
     def _selected_issue_mode(self) -> tuple[str, str]:
         protocol = self.issue_protocol.currentText()
+        if protocol == "Red Lion RAM HTTPS Server":
+            return "ram", "server"
         if protocol == "MQTT Broker":
             return "mqtt", "broker"
         if protocol == "MQTT Client/Device":
@@ -719,6 +734,12 @@ class MainWindow(QMainWindow):
         if protocol.startswith("OPC UA"):
             return "opcua", "server"
         return "crimson", "server"
+
+    def _selected_reissue_mode(self) -> str:
+        selected = self.ram_reissue.currentText()
+        if selected == "Reissue using existing private key":
+            return "existing"
+        return "new"
 
     def sync_issue_protocol_from_role(self):
         target = "MQTT Broker" if self.mqtt_role.currentText() == "Broker" else "MQTT Client/Device"
@@ -741,6 +762,7 @@ class MainWindow(QMainWindow):
                 self.mqtt_role.setCurrentText("Client/Device")
 
         self._set_row_visible(self.mqtt_role, is_mqtt)
+        self._set_row_visible(self.ram_reissue, mode == "ram")
         self._set_row_visible(self.iclientid, is_client)
         self._set_row_visible(self.iapplication_uri, is_opcua)
         self._set_row_visible(self.icn_override, is_mqtt or is_opcua)
@@ -754,6 +776,12 @@ class MainWindow(QMainWindow):
         self._set_row_visible(self.idns, True)
         self._set_row_visible(self.iip, True)
         self._set_row_visible(self.iextra, True)
+        if mode == "ram" and self.idns.text().strip() == (self.project.dns_suffix if self.project else ""):
+            with QSignalBlocker(self.idns):
+                self.idns.clear()
+        if mode == "ram" and self.issue_days.value() == 397:
+            with QSignalBlocker(self.issue_days):
+                self.issue_days.setValue(3510)
 
         self.issue_action.setEnabled(True)
         self.issue_action.setText("Issue protocol certificate package")
@@ -774,6 +802,15 @@ class MainWindow(QMainWindow):
                 values.append(host.lower())
                 cn_value = host.lower()
                 output = self.project.device_folder(name)
+        elif mode == "ram":
+            if name:
+                cn_value = self.icn_override.text().strip() or name
+                output = self.project.device_folder(name)
+            else:
+                cn_value = self.icn_override.text().strip()
+                output = self.project.path / "devices"
+            if dns_name:
+                values.append(dns_name)
             else:
                 cn_value = ""
                 output = Path(self.project.workspace)
@@ -811,6 +848,18 @@ class MainWindow(QMainWindow):
         self.isans.setText(", ".join(values))
         self.iorg.setText(self.project.organization)
         self.iout.setText(str(output))
+        has_ip = False
+        for value in values:
+            try:
+                ipaddress.ip_address(value)
+                has_ip = True
+                break
+            except ValueError:
+                continue
+        self.issue_ip_warning.setText(
+            "IP addresses included in a certificate are fixed identities. If this interface receives a different IP address later, the HTTPS certificate will no longer match that address and must be reissued. Prefer a stable DNS name when available."
+            if mode == "ram" and has_ip else ""
+        )
         self.update_issue_preview()
 
     def update_issue_preview(self):
@@ -839,6 +888,15 @@ class MainWindow(QMainWindow):
                 "trust-installers/remove-trust-linux.sh",
             ]
             header = "Crimson 3.2 HTTPS package preview"
+        elif mode == "ram":
+            files = [
+                "certificate.pem", "private-key.pem", "private-key-rsa.pem",
+                "intermediate-ca.pem", "root-ca.pem", "ca-chain.pem", "fullchain.pem",
+                "ram-https.pem", "lighttpd-gau.pem", "request.csr.pem", "certificate.ext",
+                "certificate-report.txt", "README-RAM-HTTPS.txt",
+                "trust-installers/install-trust-windows.ps1",
+            ]
+            header = "Red Lion RAM HTTPS deployment package preview (RSA 2048 / SHA-256)"
         elif mode == "opcua":
             files = [
                 "server-certificate.pem", "server-certificate.der",
@@ -1005,6 +1063,22 @@ class MainWindow(QMainWindow):
                     days=int(self.issue_days.value()), digest=self.project.pki_digest,
                     key_type=self.project.pki_key_type,
                     key_size_or_curve=self.project.pki_key_size_or_curve,
+                    reissue=self._selected_reissue_mode(),
+                )
+            if mode == "ram":
+                if not self.idevice.text().strip():
+                    raise ValueError("Device name is required for the Red Lion RAM HTTPS profile.")
+                if not sans_values:
+                    raise ValueError("Provide at least one explicit DNS name or IP address for the RAM HTTPS certificate.")
+                return self.engine.issue_ram_https(
+                    self.project.path, Path(self.iout.text()),
+                    Subject(self.icn.text(), self.project.organization), sans_values,
+                    ca_password, "", days=int(self.issue_days.value()),
+                    reissue={
+                        "New issuance": "new",
+                        "Reissue using existing private key": "existing",
+                        "Reissue with new private key": "new",
+                    }[self.ram_reissue.currentText()],
                 )
             if mode == "crimson":
                 if not self.iip.text().strip():
@@ -1020,6 +1094,7 @@ class MainWindow(QMainWindow):
                     key_type=self.project.pki_key_type,
                     key_size_or_curve=self.project.pki_key_size_or_curve,
                     days=int(self.issue_days.value()),
+                    reissue=self._selected_reissue_mode(),
                 )
 
             key_password = self.chosen_password(
@@ -1043,6 +1118,7 @@ class MainWindow(QMainWindow):
                     digest=self.project.pki_digest,
                     key_type=self.project.pki_key_type,
                     key_size_or_curve=self.project.pki_key_size_or_curve,
+                    reissue=self._selected_reissue_mode(),
                 )
 
             client_id = self.iclientid.text().strip()
@@ -1059,6 +1135,7 @@ class MainWindow(QMainWindow):
                 digest=self.project.pki_digest,
                 key_type=self.project.pki_key_type,
                 key_size_or_curve=self.project.pki_key_size_or_curve,
+                reissue=self._selected_reissue_mode(),
             )
         self.guard(work)
 
