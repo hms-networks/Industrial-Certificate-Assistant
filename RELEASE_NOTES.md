@@ -1,3 +1,26 @@
+# Version 0.8.0
+
+- Added the first-class Red Lion RAM HTTPS Server profile.
+- Added explicit DNS and IPv4/IPv6 SAN handling for RAM devices without
+  automatically appending `.local`.
+- Added RAM-compatible deployment artifacts including `private-key-rsa.pem`,
+  `ram-https.pem`, `lighttpd-gau.pem`, and `README-RAM-HTTPS.txt`.
+- Added validation for RAM certificate/key matching, chain validity, SANs,
+  server authentication EKU, HTTPS key usage, `CA:FALSE`, PEM ordering, and
+  root certificate exclusion.
+- Added safe certificate reissuance with existing-key reuse or new-key
+  rotation across RAM, Crimson, MQTT, and OPC UA workflows.
+- Added timestamped archival of previous device certificate packages and key
+  material during reissuance.
+- Added issuing-CA lifetime enforcement for leaf certificates.
+- Added Windows trust-installer elevation checks before LocalMachine changes.
+- Added project reopening support with last-workspace restoration after
+  restarting ICA.
+- Imported project metadata now repopulates the PKI form, including
+  organization, workspace, CA encryption, key settings, digest, and validity.
+- Added bundled OpenSSL configuration discovery when running outside the
+  packaged runtime hook.
+
 # Version 0.5.0
 
 - Added protocol-aware certificate issuance while preserving existing
