@@ -696,6 +696,11 @@ class MainWindow(QMainWindow):
         self.project_status.setStyleSheet("font-weight: 600; color: #16a34a")
         with QSignalBlocker(self.iws): self.iws.setText(project.workspace)
         with QSignalBlocker(self.csrws): self.csrws.setText(project.workspace)
+        with QSignalBlocker(self.pkiparent): self.pkiparent.setText(str(project.path.parent))
+        with QSignalBlocker(self.pkiname): self.pkiname.setText(project.project_name)
+        with QSignalBlocker(self.pkiorg): self.pkiorg.setText(project.organization)
+        with QSignalBlocker(self.pkidns): self.pkidns.setText(project.dns_suffix)
+        with QSignalBlocker(self.pkiworkspace): self.pkiworkspace.setText(project.workspace)
         self.csrorg.setText(project.organization); self.iorg.setText(project.organization)
         self.idns.setText(project.dns_suffix)
         if hasattr(self, "pki_key_type"):
@@ -707,6 +712,13 @@ class MainWindow(QMainWindow):
             with QSignalBlocker(self.pki_digest): self.pki_digest.setCurrentText(project.pki_digest)
         if hasattr(self, "pki_validity"):
             with QSignalBlocker(self.pki_validity): self.pki_validity.setValue(project.pki_validity_days)
+        if hasattr(self, "pkiprotect") and project.ca_key_encrypted is not None:
+            with QSignalBlocker(self.pkiprotect): self.pkiprotect.setChecked(project.ca_key_encrypted)
+            self.pkipass.setEnabled(project.ca_key_encrypted)
+            self.pkipassconfirm.setEnabled(project.ca_key_encrypted)
+            self.pkipwcontrols.setEnabled(project.ca_key_encrypted)
+            if not project.ca_key_encrypted:
+                self.pkipass.clear(); self.pkipassconfirm.clear()
         self.update_pki_preview()
         if project.ca_key_encrypted is True:
             self.icapass.setPlaceholderText("Required: this project uses encrypted CA keys")
