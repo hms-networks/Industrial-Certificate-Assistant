@@ -816,6 +816,8 @@ class MainWindow(QMainWindow):
         dns_name = self.idns.text().strip().lower()
         client_id = self.iclientid.text().strip()
         values: list[str] = []
+        cn_value = ""
+        output = Path(self.project.workspace)
 
         if mode == "crimson":
             suffix = dns_name.strip(".") or self.project.dns_suffix
@@ -833,9 +835,6 @@ class MainWindow(QMainWindow):
                 output = self.project.path / "devices"
             if dns_name:
                 values.append(dns_name)
-            else:
-                cn_value = ""
-                output = Path(self.project.workspace)
         elif mode == "opcua":
             suffix = dns_name.strip(".") or self.project.dns_suffix
             host = (name if "." in name else f"{name}.{suffix}").lower() if name else dns_name
