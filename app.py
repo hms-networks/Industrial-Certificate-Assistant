@@ -86,6 +86,10 @@ class MainWindow(QMainWindow):
         subtitle = QLabel("Guided PKI Management for Crimson 3.2, MQTT, and OPC UA"); subtitle.setObjectName("brandSubtitle")
         brand.addWidget(title); brand.addWidget(subtitle)
         masthead_layout.addLayout(brand); masthead_layout.addStretch(1)
+        self.open_project_button = QPushButton("Open project")
+        self.open_project_button.setObjectName("themeToggle")
+        self.open_project_button.clicked.connect(self.choose_project)
+        masthead_layout.addWidget(self.open_project_button)
         self.theme_toggle = QPushButton("Dark mode")
         self.theme_toggle.setObjectName("themeToggle")
         self.theme_toggle.setCheckable(True)
@@ -147,6 +151,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
         self.setStyleSheet(self.application_stylesheet())
         self.update_theme_status()
+        self.restore_last_project()
 
     def application_stylesheet(self):
         if self.dark_mode:
@@ -329,6 +334,22 @@ class MainWindow(QMainWindow):
                 if on_change: on_change(value)
         button.clicked.connect(browse); box.addWidget(edit); box.addWidget(button)
         return row, edit
+
+    def choose_project(self):
+        start = self.settings.value("project/last_workspace", "", type=str)
+        selected = QFileDialog.getExistingDirectory(self, "Open ICA project", start or str(Path.home()))
+        if selected:
+            self.load_project(selected)
+
+    def restore_last_project(self):
+        workspace = self.settings.value("project/last_workspace", "", type=str).strip()
+        if not workspace:
+            return
+        if Path(workspace).is_dir():
+            self.load_project(workspace)
+        else:
+            self.project_status.setText("Previous project is unavailable")
+            self.project_status.setStyleSheet("color: #ca8a04")
 
     @staticmethod
     def password_field():
@@ -669,6 +690,7 @@ class MainWindow(QMainWindow):
 
     def apply_project(self, project: Project):
         self.project = project
+        self.settings.setValue("project/last_workspace", project.workspace)
         project.create_structure()
         self.project_status.setText(f"Loaded: {project.project_name} — {project.organization}")
         self.project_status.setStyleSheet("font-weight: 600; color: #16a34a")
