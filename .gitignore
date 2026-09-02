@@ -39,3 +39,6 @@ openssl_binaries/
 vendor/openssl/windows/*.exe
 vendor/openssl/windows/*.dll
 *.pem
+
+# Internal / temporary OPC UA testing guides
+Austin_Coates_Flexy_Kepware_OPCUA_PKI_Test_Guide*.pdf
