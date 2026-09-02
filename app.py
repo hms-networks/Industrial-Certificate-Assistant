@@ -516,6 +516,7 @@ class MainWindow(QMainWindow):
             "MQTT Broker",
             "MQTT Client/Device",
             "OPC UA Server",
+            "OPC UA Client",
         ])
         self.mqtt_role = QComboBox(); self.mqtt_role.addItems(["Broker", "Client/Device"])
         self.ram_reissue = QComboBox(); self.ram_reissue.addItems([
@@ -540,7 +541,7 @@ class MainWindow(QMainWindow):
         self.set_help(self.mqtt_role, "Broker certificates identify MQTT servers; client certificates identify connecting devices.")
         self.set_help(self.idevice, "Device or broker name used for folder naming and default certificate identity.")
         self.set_help(self.iclientid, "MQTT Client ID. Required for MQTT client certificates.")
-        self.set_help(self.iapplication_uri, "OPC UA ApplicationUri. It must exactly match the server endpoint identity, for example urn:device.local:server.")
+        self.set_help(self.iapplication_uri, "OPC UA ApplicationUri. It must exactly match the application's own endpoint identity, for example urn:device.local:server or urn:device.local:client.")
         self.set_help(self.icn_override, "Optional explicit Common Name override. Leave blank to use protocol defaults.")
         self.set_help(self.iip, "Optional or required IP address depending on profile.")
         self.set_help(self.idns, "Primary DNS name used by clients to connect to this broker or endpoint.")
@@ -765,8 +766,10 @@ class MainWindow(QMainWindow):
             return "mqtt", "broker"
         if protocol == "MQTT Client/Device":
             return "mqtt", "client"
-        if protocol.startswith("OPC UA"):
+        if protocol == "OPC UA Server":
             return "opcua", "server"
+        if protocol == "OPC UA Client":
+            return "opcua", "client"
         return "crimson", "server"
 
     def _selected_reissue_mode(self) -> str:
@@ -786,7 +789,7 @@ class MainWindow(QMainWindow):
         mode, role = self._selected_issue_mode()
         is_mqtt = mode == "mqtt"
         is_opcua = mode == "opcua"
-        is_client = role == "client"
+        is_mqtt_client = is_mqtt and role == "client"
 
         if self.issue_protocol.currentText() == "MQTT Broker" and self.mqtt_role.currentText() != "Broker":
             with QSignalBlocker(self.mqtt_role):
@@ -797,7 +800,7 @@ class MainWindow(QMainWindow):
 
         self._set_row_visible(self.mqtt_role, is_mqtt)
         self._set_row_visible(self.ram_reissue, mode == "ram")
-        self._set_row_visible(self.iclientid, is_client)
+        self._set_row_visible(self.iclientid, is_mqtt_client)
         self._set_row_visible(self.iapplication_uri, is_opcua)
         self._set_row_visible(self.icn_override, is_mqtt or is_opcua)
         protects_key = is_mqtt or is_opcua
@@ -853,10 +856,13 @@ class MainWindow(QMainWindow):
             if host:
                 values.append(host)
             cn_value = self.icn_override.text().strip() or host
-            output = self.project.opcua_server_folder(name) if name else Path(self.project.workspace) / "opcua" / "servers"
+            if role == "client":
+                output = self.project.opcua_client_folder(name) if name else Path(self.project.workspace) / "opcua" / "clients"
+            else:
+                output = self.project.opcua_server_folder(name) if name else Path(self.project.workspace) / "opcua" / "servers"
             if host and not self.iapplication_uri.text().strip():
                 with QSignalBlocker(self.iapplication_uri):
-                    self.iapplication_uri.setText(f"urn:{host}:server")
+                    self.iapplication_uri.setText(f"urn:{host}:{role}")
         elif role == "broker":
             if dns_name:
                 values.append(dns_name)
@@ -931,18 +937,19 @@ class MainWindow(QMainWindow):
             ]
             header = "Red Lion RAM HTTPS deployment package preview (RSA 2048 / SHA-256)"
         elif mode == "opcua":
+            prefix = "client" if role == "client" else "server"
             files = [
-                "server-certificate.pem", "server-certificate.der",
-                "server-private-key.pem", "server-fullchain.pem",
+                f"{prefix}-certificate.pem", f"{prefix}-certificate.der",
+                f"{prefix}-private-key.pem", f"{prefix}-fullchain.pem",
                 "ca-chain.pem", "intermediate-ca.pem", "root-ca.pem",
-                "server-certificate.ext", "server-request.csr.pem",
+                f"{prefix}-certificate.ext", f"{prefix}-request.csr.pem",
                 "certificate-report.txt", "OPC-UA-INSTALLATION.txt",
                 "opcua-trust/trusted/certs/root-ca.der",
                 "opcua-trust/issuers/certs/intermediate-ca.der",
                 "opcua-trust/issuers/crl/intermediate-ca.crl.pem",
                 "opcua-trust/issuers/crl/intermediate-ca.crl.der",
             ]
-            header = f"OPC UA server package preview ({self.iapplication_uri.text().strip() or 'Application URI required'})"
+            header = f"OPC UA {prefix} package preview ({self.iapplication_uri.text().strip() or 'Application URI required'})"
         elif role == "broker":
             files = [
                 "broker-certificate.pem",
@@ -1089,7 +1096,8 @@ class MainWindow(QMainWindow):
                     raise ValueError("OPC UA Application URI is required.")
                 key_password = self.chosen_password(
                     self.issue_keyprotect, self.issue_keypass, self.issue_keypassconfirm, "OPC UA")
-                return self.engine.issue_opcua_server(
+                issuer = self.engine.issue_opcua_client if role == "client" else self.engine.issue_opcua_server
+                return issuer(
                     self.project.path, Path(self.iout.text()),
                     Subject(self.icn.text(), self.project.organization), sans_values,
                     application_uri, ca_password, key_password,

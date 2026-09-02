@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 
 readonly APP_NAME="IndustrialCertificateAssistant"
-readonly APP_VERSION="0.8.0"
+readonly APP_VERSION="0.9.0"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 cd "$SCRIPT_DIR"

@@ -15,7 +15,6 @@ dist/
 .vscode/
 
 # Certificates
-ica/
 *.key
 *.p12
 *.pfx

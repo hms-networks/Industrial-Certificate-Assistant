@@ -1,3 +1,9 @@
+# Version 0.9.0
+
+- Added an OPC UA Client profile, mirroring the OPC UA Server workflow with
+  its own `opcua/clients` project folder, `clientAuth`-only EKU, ApplicationUri
+  handling, DER exports, CRL packaging, and installation guide.
+
 # Version 0.8.0
 
 - Added the first-class Red Lion RAM HTTPS Server profile.

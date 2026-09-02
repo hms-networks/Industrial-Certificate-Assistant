@@ -519,7 +519,60 @@ def test_issue_opcua_server_package_with_crl(tmp_path: Path):
     assert "OK" in engine.verify_chain(result["certificate"], result["ca_chain"])
 
 
+def test_opcua_client_profile_extended_key_usage():
+    profile = PROFILES["opcua_client"]
+    assert profile.extended_key_usage == ("clientAuth",)
+    assert profile.key_usage == ("digitalSignature", "keyEncipherment")
+
+
+def test_issue_opcua_client_package_with_crl(tmp_path: Path):
+    engine = OpenSSLEngine()
+    workspace = tmp_path / "opcua client pki"
+    project = Project(str(workspace), "AEP", "AEP OPC UA PKI", "local")
+    project.save()
+    engine.create_pki(workspace, Subject("AEP Root", "AEP"), Subject("AEP Issuing", "AEP"), "")
+
+    result = engine.issue_opcua_client(
+        workspace,
+        project.opcua_client_folder("uaexpert-01"),
+        Subject("uaexpert-01.local", "AEP"),
+        ["uaexpert-01.local", "10.124.214.66"],
+        "urn:uaexpert-01.local:client",
+        "",
+        "",
+    )
+
+    cert_text = engine.inspect_certificate(result["certificate"])
+    assert "URI:urn:uaexpert-01.local:client" in cert_text
+    assert "DNS:uaexpert-01.local" in cert_text
+    assert "IP Address:10.124.214.66" in cert_text
+    assert "TLS Web Client Authentication" in cert_text
+    assert "TLS Web Server Authentication" not in cert_text
+    assert result["certificate_der"].read_bytes().startswith(b"0")
+    assert result["crl_der"].read_bytes().startswith(b"0")
+    assert result["root_der"].exists()
+    assert result["intermediate_der"].exists()
+    assert result["installation_guide"].exists()
+    assert "OK" in engine.verify_chain(result["certificate"], result["ca_chain"])
+
+
+def test_opcua_client_reissue_reuses_key_and_archives_package(tmp_path: Path):
+    engine = OpenSSLEngine()
+    workspace = tmp_path / "opcua-client-reissue"
+    project = Project(str(workspace), "UA Org", "UA PKI", "local")
+    project.save()
+    engine.create_pki(workspace, Subject("UA Root", "UA Org"), Subject("UA Issuing", "UA Org"), "")
+    output = project.opcua_client_folder("client-01")
+    first = engine.issue_opcua_client(workspace, output, Subject("client.local", "UA Org"), ["client.local", "10.0.0.1"], "urn:client.local:client", "", "", days=3500)
+    old_key = first["private_key"].read_bytes()
+    second = engine.issue_opcua_client(workspace, output, Subject("client.local", "UA Org"), ["client.local", "10.0.0.2"], "urn:client.local:client", "", "", days=3500, reissue="existing")
+    assert second["private_key"].read_bytes() == old_key
+    assert second["archive"].joinpath("client-private-key.pem").exists()
+    assert "10.0.0.2" in engine.inspect_certificate(second["certificate"])
+
+
 def test_opcua_project_folder_created(tmp_path: Path):
     project = Project(str(tmp_path / "opcua-structure"), "AEP")
     project.save()
     assert (project.path / "opcua" / "servers").is_dir()
+    assert (project.path / "opcua" / "clients").is_dir()

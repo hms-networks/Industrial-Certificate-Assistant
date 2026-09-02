@@ -4,6 +4,13 @@ Cross-platform guided PKI utility for FlexEdge HTTPS certificates and future
 industrial TLS profiles. Cryptographic operations are performed by OpenSSL;
 the desktop interface is built with Python and PySide6.
 
+## Version 0.9.0 milestone
+
+- Added an OPC UA Client profile alongside the existing OPC UA Server
+  profile, with its own `opcua/clients` project folder, `clientAuth`-only
+  EKU, ApplicationUri handling, DER exports, CRL packaging, and installation
+  guide.
+
 ## Version 0.8.0 milestone
 
 - Added a Red Lion RAM HTTPS Server profile with explicit DNS/IP SANs and no
@@ -149,6 +156,9 @@ Industrial_Certs/
 ├── mqtt/
 │   ├── brokers/
 │   └── clients/
+├── opcua/
+│   ├── servers/
+│   └── clients/
 ├── trust-installers/
 ├── backups/
 └── reports/
@@ -161,7 +171,7 @@ Passwords are never stored in `ica-project.json`.
 Copyright 2026 HMS Networks. Licensed under the Apache License 2.0. See
 `LICENSE` and `NOTICE`. OpenSSL redistribution information is documented in
 `THIRD_PARTY_NOTICES.md`.
-Industrial Certificate Assistant build files (version 0.8.0)
+Industrial Certificate Assistant build files (version 0.9.0)
 
 Place these files beside app.py and requirements.txt:
 
@@ -185,10 +195,10 @@ Application version label:
 
   Then use APP_VERSION wherever the GUI displays the release number.
 
-The Windows build embeds 0.8.0.0 in EXE file metadata and bundles VERSION.txt.
+The Windows build embeds 0.9.0.0 in EXE file metadata and bundles VERSION.txt.
 The runtime hook points bundled OpenSSL at its bundled openssl.cnf before app.py starts.
 
-Industrial Certificate Assistant build files (version 0.8.0)
+Industrial Certificate Assistant build files (version 0.9.0)
 
 Place these files beside app.py and requirements.txt:
 
@@ -212,6 +222,6 @@ Application version label:
 
   Then use APP_VERSION wherever the GUI displays the release number.
 
-The Windows build embeds 0.8.0.0 in EXE file metadata and bundles VERSION.txt.
+The Windows build embeds 0.9.0.0 in EXE file metadata and bundles VERSION.txt.
 The runtime hook points bundled OpenSSL at its bundled openssl.cnf before app.py starts.
 When a splash image is present, the builders install Pillow if it is not already available.
