@@ -133,25 +133,34 @@ class OpenSSLEngine:
         return Path(located)
 
     def run(self, *args: str, password: str | None = None, cwd: Path | None = None) -> str:
-        password_path: Path | None = None
+        passwords = {"{PASSFILE}": password} if password is not None else {}
+        return self._run(*args, passwords=passwords, cwd=cwd)
+
+    def _run(self, *args: str, passwords: dict[str, str], cwd: Path | None = None) -> str:
+        """Like `run`, but supports more than one distinct password placeholder
+        in a single invocation (for example a PKCS#12 export's separate
+        -passin/-passout values). Each dict key is a placeholder token that gets
+        substituted with the path to its own temporary password file."""
+        password_paths: list[Path] = []
         command = [self.executable, *args]
         try:
-            if password is not None:
+            for placeholder, value in passwords.items():
                 fd, raw_path = tempfile.mkstemp(prefix="ica-pass-")
                 password_path = Path(raw_path)
-                os.write(fd, password.encode("utf-8"))
+                os.write(fd, value.encode("utf-8"))
                 os.close(fd)
                 if os.name != "nt":
                     password_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
-                command = [item.replace("{PASSFILE}", str(password_path)) for item in command]
+                password_paths.append(password_path)
+                command = [item.replace(placeholder, str(password_path)) for item in command]
             display = " ".join(command)
-            if password_path:
+            for password_path in password_paths:
                 display = display.replace(str(password_path), "<password-file>")
             self.logger(f"> {display}")
             proc = subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=False)
             output = (proc.stdout + proc.stderr).strip()
             if proc.returncode:
-                if password is not None and _looks_like_wrong_password(output):
+                if passwords and _looks_like_wrong_password(output):
                     self.logger(output)
                     raise OpenSSLError(
                         "Incorrect password: OpenSSL could not decrypt the private key with "
@@ -163,7 +172,7 @@ class OpenSSLEngine:
                 self.logger(output)
             return output
         finally:
-            if password_path:
+            for password_path in password_paths:
                 password_path.unlink(missing_ok=True)
 
     def version(self) -> str:
@@ -705,6 +714,17 @@ echo "Then verify publish/subscribe with mosquitto_pub and mosquitto_sub."
         return {"certificate": cert_out, "private_key": key_out, "ca_chain": chain_out,
                 "fullchain": fullchain, "root": root, "report": report, **trust}
 
-    def export_pkcs12(self, certificate: Path, private_key: Path, ca_chain: Path, output: Path, password: str) -> Path:
-        self.run("pkcs12", "-export", "-in", str(certificate), "-inkey", str(private_key), "-certfile", str(ca_chain), "-out", str(output), "-passin", "file:{PASSFILE}", "-passout", "file:{PASSFILE}", password=password)
+    def export_pkcs12(self, certificate: Path, private_key: Path, ca_chain: Path, output: Path,
+                      pfx_password: str, key_password: str = "") -> Path:
+        """Bundle `certificate` + `private_key` + `ca_chain` into a password-protected
+        .pfx, for applications (Kepware, IIS, ...) that import PKCS#12 instead of
+        separate PEM files. `key_password` decrypts `private_key` if it is itself
+        encrypted; `pfx_password` protects the resulting .pfx and may be different."""
+        args = ["pkcs12", "-export", "-in", str(certificate), "-inkey", str(private_key),
+                "-certfile", str(ca_chain), "-out", str(output), "-passout", "file:{PASSOUT}"]
+        passwords = {"{PASSOUT}": pfx_password}
+        if is_encrypted_private_key(private_key):
+            args += ["-passin", "file:{PASSIN}"]
+            passwords["{PASSIN}"] = key_password
+        self._run(*args, passwords=passwords)
         return output

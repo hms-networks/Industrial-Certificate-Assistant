@@ -531,6 +531,8 @@ class MainWindow(QMainWindow):
         self.iout = QLineEdit(readOnly=True); self.icapass = self.password_field()
         self.issue_days = QSpinBox(); self.issue_days.setRange(1, 3650); self.issue_days.setValue(397)
         self.mqtt_mutual_tls = QCheckBox("Enable mutual TLS (require client certificate)")
+        self.export_pfx = QCheckBox("Also export a PKCS#12 (.pfx) bundle (for Kepware / Windows certificate import)")
+        self.pfx_pass = self.password_field(); self.pfx_pass_confirm = self.password_field()
         self.issue_preview = QTextEdit(readOnly=True)
         self.issue_preview.setMinimumHeight(150)
         self.issue_ip_warning = QLabel("")
@@ -552,6 +554,9 @@ class MainWindow(QMainWindow):
         self.set_help(self.icapass, "Password for encrypted CA keys. Leave blank only for unencrypted CA keys.")
         self.set_help(self.issue_days, "Issued certificate validity period in days.")
         self.set_help(self.mqtt_mutual_tls, "Mutual TLS authenticates both sides. Never upload CA private keys to Mosquitto or industrial devices.")
+        self.set_help(self.export_pfx, "Bundles the issued certificate, private key, and CA chain into a single password-protected .pfx file, for applications such as Kepware that import PKCS#12 instead of separate PEM files.")
+        self.set_help(self.pfx_pass, "Password that protects the .pfx bundle. Required when the .pfx export is enabled.")
+        self.set_help(self.pfx_pass_confirm, "Re-enter the .pfx password to confirm it.")
         self.set_help(self.issue_preview, "Preview of expected output files for the selected protocol package.")
         for field in (self.idevice, self.iclientid, self.icn_override, self.iapplication_uri, self.iip, self.idns, self.iextra):
             field.textChanged.connect(self.update_issue_defaults)
@@ -588,6 +593,13 @@ class MainWindow(QMainWindow):
         self.icapass.textChanged.connect(lambda _: self._ca_password_timer.start(400))
         form.addRow("Certificate validity (days)", self.issue_days)
         form.addRow(self.mqtt_mutual_tls)
+        form.addRow(self.export_pfx)
+        self.pfx_row = QWidget(); pfx_box = QHBoxLayout(self.pfx_row); pfx_box.setContentsMargins(0, 0, 0, 0)
+        pfx_show = QCheckBox("Show"); pfx_show.toggled.connect(lambda visible: self.show_passwords((self.pfx_pass, self.pfx_pass_confirm), visible))
+        pfx_box.addWidget(self.pfx_pass); pfx_box.addWidget(pfx_show)
+        form.addRow(".pfx password", self.pfx_row)
+        form.addRow("Confirm .pfx password", self.pfx_pass_confirm)
+        self.export_pfx.toggled.connect(lambda _: self.update_issue_mode())
         form.addRow("Automatic output folder", self.iout)
         form.addRow("Package preview", self.issue_preview)
         form.addRow("Address warning", self.issue_ip_warning)
@@ -816,6 +828,16 @@ class MainWindow(QMainWindow):
         self._set_row_visible(self.issue_keycontrols, protects_key and self.issue_keyprotect.isChecked())
         self._set_row_visible(self.issue_days, True)
         self.mqtt_mutual_tls.setVisible(is_mqtt and role == "broker")
+        is_opcua_server = is_opcua and role == "server"
+        self.export_pfx.setVisible(is_opcua_server)
+        if not is_opcua_server and self.export_pfx.isChecked():
+            with QSignalBlocker(self.export_pfx):
+                self.export_pfx.setChecked(False)
+        pfx_fields_visible = is_opcua_server and self.export_pfx.isChecked()
+        self._set_row_visible(self.pfx_row, pfx_fields_visible)
+        self._set_row_visible(self.pfx_pass_confirm, pfx_fields_visible)
+        if not pfx_fields_visible:
+            self.pfx_pass.clear(); self.pfx_pass_confirm.clear()
         self._set_row_visible(self.idns, True)
         self._set_row_visible(self.iip, True)
         self._set_row_visible(self.iextra, True)
@@ -980,6 +1002,8 @@ class MainWindow(QMainWindow):
                 "opcua-trust/issuers/crl/intermediate-ca.crl.pem",
                 "opcua-trust/issuers/crl/intermediate-ca.crl.der",
             ]
+            if role == "server" and self.export_pfx.isChecked():
+                files.append(f"{prefix}-certificate.pfx")
             header = f"OPC UA {prefix} package preview ({self.iapplication_uri.text().strip() or 'Application URI required'})"
         elif role == "broker":
             files = [
@@ -1127,8 +1151,14 @@ class MainWindow(QMainWindow):
                     raise ValueError("OPC UA Application URI is required.")
                 key_password = self.chosen_password(
                     self.issue_keyprotect, self.issue_keypass, self.issue_keypassconfirm, "OPC UA")
+                export_pfx = role == "server" and self.export_pfx.isChecked()
+                if export_pfx:
+                    if not self.pfx_pass.text():
+                        raise ValueError("Enter a password to protect the .pfx bundle.")
+                    if self.pfx_pass.text() != self.pfx_pass_confirm.text():
+                        raise ValueError("The .pfx passwords do not match.")
                 issuer = self.engine.issue_opcua_client if role == "client" else self.engine.issue_opcua_server
-                return issuer(
+                result = issuer(
                     self.project.path, Path(self.iout.text()),
                     Subject(self.icn.text(), self.project.organization), sans_values,
                     application_uri, ca_password, key_password,
@@ -1137,6 +1167,14 @@ class MainWindow(QMainWindow):
                     key_size_or_curve=self.project.pki_key_size_or_curve,
                     reissue=self._selected_reissue_mode(),
                 )
+                if export_pfx:
+                    pfx = result["certificate"].with_suffix(".pfx")
+                    self.engine.export_pkcs12(
+                        result["certificate"], result["private_key"], result["ca_chain"], pfx,
+                        pfx_password=self.pfx_pass.text(), key_password=key_password,
+                    )
+                    result["pkcs12"] = pfx
+                return result
             if mode == "ram":
                 if not self.idevice.text().strip():
                     raise ValueError("Device name is required for the Red Lion RAM HTTPS profile.")

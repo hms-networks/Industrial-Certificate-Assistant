@@ -630,6 +630,52 @@ def test_opcua_client_reissue_reuses_key_and_archives_package(tmp_path: Path):
     assert "10.0.0.2" in engine.inspect_certificate(second["certificate"])
 
 
+def test_export_pkcs12_for_opcua_server_with_unencrypted_key(tmp_path: Path):
+    engine = OpenSSLEngine()
+    workspace = tmp_path / "opcua-pfx-unencrypted"
+    project = Project(str(workspace), "AEP", "AEP OPC UA PKI", "local")
+    project.save()
+    engine.create_pki(workspace, Subject("AEP Root", "AEP"), Subject("AEP Issuing", "AEP"), "")
+    result = engine.issue_opcua_server(
+        workspace, project.opcua_server_folder("kepware"), Subject("kepware.local", "AEP"),
+        ["kepware.local", "10.0.0.5"], "urn:kepware.local:server", "", "",
+    )
+
+    pfx = result["certificate"].with_suffix(".pfx")
+    engine.export_pkcs12(result["certificate"], result["private_key"], result["ca_chain"], pfx, "pfx-pass")
+
+    assert pfx.exists()
+    engine.run("pkcs12", "-in", str(pfx), "-noout", "-passin", "file:{PASSFILE}", password="pfx-pass")
+    try:
+        engine.run("pkcs12", "-in", str(pfx), "-noout", "-passin", "file:{PASSFILE}", password="wrong-pfx-pass")
+    except OpenSSLError:
+        pass
+    else:
+        raise AssertionError("Expected opening the .pfx with the wrong password to fail")
+
+
+def test_export_pkcs12_for_opcua_server_with_encrypted_key_and_different_pfx_password(tmp_path: Path):
+    engine = OpenSSLEngine()
+    workspace = tmp_path / "opcua-pfx-encrypted"
+    project = Project(str(workspace), "AEP", "AEP OPC UA PKI", "local")
+    project.save()
+    engine.create_pki(workspace, Subject("AEP Root", "AEP"), Subject("AEP Issuing", "AEP"), "")
+    result = engine.issue_opcua_server(
+        workspace, project.opcua_server_folder("kepware-enc"), Subject("kepware-enc.local", "AEP"),
+        ["kepware-enc.local", "10.0.0.6"], "urn:kepware-enc.local:server", "", "device-key-password",
+    )
+    assert "ENCRYPTED" in result["private_key"].read_text()
+
+    pfx = result["certificate"].with_suffix(".pfx")
+    engine.export_pkcs12(
+        result["certificate"], result["private_key"], result["ca_chain"], pfx,
+        pfx_password="pfx-only-password", key_password="device-key-password",
+    )
+
+    assert pfx.exists()
+    engine.run("pkcs12", "-in", str(pfx), "-noout", "-passin", "file:{PASSFILE}", password="pfx-only-password")
+
+
 def test_opcua_project_folder_created(tmp_path: Path):
     project = Project(str(tmp_path / "opcua-structure"), "AEP")
     project.save()
