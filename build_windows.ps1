@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $AppName = "IndustrialCertificateAssistant"
-$AppVersion = "0.9.1"
+$AppVersion = "0.9.2"
 $CompanyName = "HMS Networks"
 $ProductName = "Industrial Certificate Assistant"
 $Copyright = "Copyright 2026 HMS Networks"

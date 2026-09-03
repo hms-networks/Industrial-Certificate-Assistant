@@ -4,6 +4,14 @@ Cross-platform guided PKI utility for FlexEdge HTTPS certificates and future
 industrial TLS profiles. Cryptographic operations are performed by OpenSSL;
 the desktop interface is built with Python and PySide6.
 
+## Version 0.9.2 milestone
+
+- Added an optional PKCS#12 (.pfx) export for OPC UA Server certificates, for
+  applications such as Kepware/KEPServerEX that import a combined
+  certificate + private key + CA chain bundle instead of separate PEM files.
+  The .pfx has its own required password, independent of the issued private
+  key's own password.
+
 ## Version 0.9.1 milestone
 
 - Wrong-password OpenSSL errors (e.g. an incorrect CA password) now show a
@@ -183,7 +191,7 @@ Passwords are never stored in `ica-project.json`.
 Copyright 2026 HMS Networks. Licensed under the Apache License 2.0. See
 `LICENSE` and `NOTICE`. OpenSSL redistribution information is documented in
 `THIRD_PARTY_NOTICES.md`.
-Industrial Certificate Assistant build files (version 0.9.1)
+Industrial Certificate Assistant build files (version 0.9.2)
 
 Place these files beside app.py and requirements.txt:
 
@@ -207,10 +215,10 @@ Application version label:
 
   Then use APP_VERSION wherever the GUI displays the release number.
 
-The Windows build embeds 0.9.1.0 in EXE file metadata and bundles VERSION.txt.
+The Windows build embeds 0.9.2.0 in EXE file metadata and bundles VERSION.txt.
 The runtime hook points bundled OpenSSL at its bundled openssl.cnf before app.py starts.
 
-Industrial Certificate Assistant build files (version 0.9.1)
+Industrial Certificate Assistant build files (version 0.9.2)
 
 Place these files beside app.py and requirements.txt:
 
@@ -234,6 +242,6 @@ Application version label:
 
   Then use APP_VERSION wherever the GUI displays the release number.
 
-The Windows build embeds 0.9.1.0 in EXE file metadata and bundles VERSION.txt.
+The Windows build embeds 0.9.2.0 in EXE file metadata and bundles VERSION.txt.
 The runtime hook points bundled OpenSSL at its bundled openssl.cnf before app.py starts.
 When a splash image is present, the builders install Pillow if it is not already available.

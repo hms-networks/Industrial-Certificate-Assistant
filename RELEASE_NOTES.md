@@ -1,3 +1,14 @@
+# Version 0.9.2
+
+- Added an "Also export a PKCS#12 (.pfx) bundle" option to the Issue screen
+  for OPC UA Server certificates, for applications such as Kepware/
+  KEPServerEX that import a combined certificate + private key + CA chain
+  bundle instead of separate PEM files. The .pfx uses its own required
+  password, which may differ from the issued private key's own password.
+- Fixed `OpenSSLEngine.export_pkcs12` (previously unused, untested code) to
+  correctly support a source private key and destination .pfx protected by
+  different passwords.
+
 # Version 0.9.1
 
 - Wrong-password OpenSSL failures (for example an incorrect CA password) now
