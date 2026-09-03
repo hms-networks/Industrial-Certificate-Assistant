@@ -1,3 +1,18 @@
+# Version 0.9.1
+
+- Wrong-password OpenSSL failures (for example an incorrect CA password) now
+  raise a plain "Incorrect password" message instead of showing raw OpenSSL
+  crypto stack trace text in the error dialog. The full OpenSSL diagnostic is
+  still written to the activity log for troubleshooting.
+- Fixed an issuance-retry bug: a wrong CA password used to fail only after
+  ICA had already generated a new device private key, CSR, and `.ext` file on
+  disk, leaving partial output that blocked retrying with the correct
+  password. The CA password is now verified against the project's CA key
+  before any output is created.
+- The "Issue a protocol certificate" screen now checks the typed CA password
+  against the loaded project's CA key as you type (debounced) and shows a
+  live "CA password verified" / "Incorrect CA password" indicator.
+
 # Version 0.9.0
 
 - Added an OPC UA Client profile, mirroring the OPC UA Server workflow with

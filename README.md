@@ -4,6 +4,18 @@ Cross-platform guided PKI utility for FlexEdge HTTPS certificates and future
 industrial TLS profiles. Cryptographic operations are performed by OpenSSL;
 the desktop interface is built with Python and PySide6.
 
+## Version 0.9.1 milestone
+
+- Wrong-password OpenSSL errors (e.g. an incorrect CA password) now show a
+  plain "Incorrect password" message instead of raw OpenSSL crypto stack
+  trace text; the full OpenSSL diagnostic still goes to the activity log.
+- The CA password is now validated before issuance creates any output, so a
+  wrong password no longer leaves a partially generated device key/CSR
+  behind that blocked retrying with the correct password.
+- The Issue screen checks the typed CA password against the loaded
+  project's CA key as you type and shows a live verified/incorrect
+  indicator.
+
 ## Version 0.9.0 milestone
 
 - Added an OPC UA Client profile alongside the existing OPC UA Server
@@ -171,7 +183,7 @@ Passwords are never stored in `ica-project.json`.
 Copyright 2026 HMS Networks. Licensed under the Apache License 2.0. See
 `LICENSE` and `NOTICE`. OpenSSL redistribution information is documented in
 `THIRD_PARTY_NOTICES.md`.
-Industrial Certificate Assistant build files (version 0.9.0)
+Industrial Certificate Assistant build files (version 0.9.1)
 
 Place these files beside app.py and requirements.txt:
 
@@ -195,10 +207,10 @@ Application version label:
 
   Then use APP_VERSION wherever the GUI displays the release number.
 
-The Windows build embeds 0.9.0.0 in EXE file metadata and bundles VERSION.txt.
+The Windows build embeds 0.9.1.0 in EXE file metadata and bundles VERSION.txt.
 The runtime hook points bundled OpenSSL at its bundled openssl.cnf before app.py starts.
 
-Industrial Certificate Assistant build files (version 0.9.0)
+Industrial Certificate Assistant build files (version 0.9.1)
 
 Place these files beside app.py and requirements.txt:
 
@@ -222,6 +234,6 @@ Application version label:
 
   Then use APP_VERSION wherever the GUI displays the release number.
 
-The Windows build embeds 0.9.0.0 in EXE file metadata and bundles VERSION.txt.
+The Windows build embeds 0.9.1.0 in EXE file metadata and bundles VERSION.txt.
 The runtime hook points bundled OpenSSL at its bundled openssl.cnf before app.py starts.
 When a splash image is present, the builders install Pillow if it is not already available.

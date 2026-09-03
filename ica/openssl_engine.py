@@ -307,12 +307,28 @@ class OpenSSLEngine:
 
     def verify_ca_password(self, ca_key: Path, password: str) -> None:
         """Raise a clear error before any output is written if `password` cannot
-        decrypt `ca_key`, instead of failing partway through issuance."""
+        decrypt `ca_key`, instead of failing partway through issuance.
+
+        Any failure here is treated as a wrong password rather than pattern-matched
+        against OpenSSL's error text, which varies by command and OpenSSL version
+        (compare the cipher-level "bad decrypt" from `x509 -CAkey` with the
+        decoder-level "No supported data to decode" from `pkey`). The file's
+        existence and encryption already ruled out the other failure modes.
+        """
         if not is_encrypted_private_key(ca_key):
             return
         if not password:
             raise ValueError("This project uses encrypted CA keys; enter the CA password to continue.")
-        self.run("pkey", "-in", str(ca_key), "-noout", "-passin", "file:{PASSFILE}", password=password)
+        try:
+            self.run("pkey", "-in", str(ca_key), "-noout", "-passin", "file:{PASSFILE}", password=password)
+        except OpenSSLError as exc:
+            if "Incorrect password" not in str(exc):
+                self.logger(str(exc))
+            raise OpenSSLError(
+                "Incorrect password: OpenSSL could not decrypt the CA private key with "
+                "the password you entered. Verify the password and try again. The full "
+                "OpenSSL error was written to the activity log."
+            ) from None
 
     def issue_server(self, workspace: Path, output: Path, subject: Subject, sans: Iterable[str],
                      ca_password: str, key_password: str,
