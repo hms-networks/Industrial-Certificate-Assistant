@@ -249,6 +249,35 @@ def test_issue_with_wrong_ca_password_gives_friendly_error(tmp_path: Path):
     )
 
 
+def test_wrong_ca_password_leaves_no_partial_output_and_retry_succeeds(tmp_path: Path):
+    engine = OpenSSLEngine()
+    workspace = tmp_path / "retry-after-wrong-password"
+    project = Project(str(workspace), "Lab", "Lab PKI", "local")
+    project.save()
+    engine.create_pki(workspace, Subject("Lab Root", "Lab"), Subject("Lab Issuing", "Lab"), "ca-password")
+    output = project.device_folder("lab-edge")
+
+    try:
+        engine.issue_server(
+            workspace, output, Subject("lab-edge.local", "Lab"),
+            ["lab-edge.local", "192.168.1.20"], "wrong-password", "",
+        )
+    except OpenSSLError:
+        pass
+    else:
+        raise AssertionError("Expected issuance with an incorrect CA password to fail")
+
+    assert not output.exists(), (
+        "A wrong CA password must not leave a partially generated device key/CSR behind"
+    )
+
+    result = engine.issue_server(
+        workspace, output, Subject("lab-edge.local", "Lab"),
+        ["lab-edge.local", "192.168.1.20"], "ca-password", "",
+    )
+    assert result["certificate"].exists()
+
+
 def test_package_existing_requires_password_for_encrypted_private_key(tmp_path: Path):
     engine = OpenSSLEngine()
     workspace = tmp_path / "import-source"

@@ -305,6 +305,15 @@ class OpenSSLEngine:
         trust = create_trust_bundle(workspace / "trust-installers", root_cert, int_cert)
         return {"root_certificate": root_cert, "intermediate_certificate": int_cert, "chain": chain, **trust}
 
+    def verify_ca_password(self, ca_key: Path, password: str) -> None:
+        """Raise a clear error before any output is written if `password` cannot
+        decrypt `ca_key`, instead of failing partway through issuance."""
+        if not is_encrypted_private_key(ca_key):
+            return
+        if not password:
+            raise ValueError("This project uses encrypted CA keys; enter the CA password to continue.")
+        self.run("pkey", "-in", str(ca_key), "-noout", "-passin", "file:{PASSFILE}", password=password)
+
     def issue_server(self, workspace: Path, output: Path, subject: Subject, sans: Iterable[str],
                      ca_password: str, key_password: str,
                      profile: CertificateProfile = PROFILES["flexedge_https"],
@@ -312,18 +321,17 @@ class OpenSSLEngine:
                      key_type: str = "RSA", key_size_or_curve: str = "RSA 3072",
                      application_uri: str = "", existing_key: Path | None = None,
                      reissue: str | None = None) -> dict[str, Path]:
-        output.mkdir(parents=True, exist_ok=True)
-        archive: Path | None = None
-        if reissue is not None:
-            existing_key, archive = self._prepare_reissue(output, reissue)
         int_key = workspace / "intermediate-ca" / "private" / "intermediate-ca.key.pem"
         int_cert = workspace / "intermediate-ca" / "certs" / "intermediate-ca.cert.pem"
         root_cert = workspace / "root-ca" / "certs" / "root-ca.cert.pem"
         for needed in (int_key, int_cert, root_cert):
             if not needed.exists():
                 raise FileNotFoundError(f"PKI file not found: {needed}")
-        if is_encrypted_private_key(int_key) and not ca_password:
-            raise ValueError("This project uses encrypted CA keys; enter the CA password to issue a certificate.")
+        self.verify_ca_password(int_key, ca_password)
+        output.mkdir(parents=True, exist_ok=True)
+        archive: Path | None = None
+        if reissue is not None:
+            existing_key, archive = self._prepare_reissue(output, reissue)
         names = ("request.csr.pem", "certificate.pem", "fullchain.pem")
         if existing_key is None:
             names = ("private-key.pem",) + names

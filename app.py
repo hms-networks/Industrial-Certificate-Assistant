@@ -10,7 +10,7 @@ import sys
 import ctypes
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QSignalBlocker, Qt
+from PySide6.QtCore import QSettings, QSignalBlocker, Qt, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QInputDialog, QCheckBox,
@@ -580,6 +580,12 @@ class MainWindow(QMainWindow):
         self.issue_keyprotect, self.issue_keypass, self.issue_keypassconfirm, self.issue_keycontrols = self.add_new_password_controls(form, "issued private key")
         self.issue_keyprotect.toggled.connect(lambda _: self.update_issue_mode())
         form.addRow("CA password (blank if CA is unencrypted)", ca_row)
+        self.ca_password_status = QLabel("")
+        self.set_help(self.ca_password_status, "Checked automatically against the loaded project's CA private key as you type.")
+        form.addRow("", self.ca_password_status)
+        self._ca_password_timer = QTimer(self); self._ca_password_timer.setSingleShot(True)
+        self._ca_password_timer.timeout.connect(self.check_ca_password)
+        self.icapass.textChanged.connect(lambda _: self._ca_password_timer.start(400))
         form.addRow("Certificate validity (days)", self.issue_days)
         form.addRow(self.mqtt_mutual_tls)
         form.addRow("Automatic output folder", self.iout)
@@ -900,6 +906,31 @@ class MainWindow(QMainWindow):
             if mode == "ram" and has_ip else ""
         )
         self.update_issue_preview()
+        if hasattr(self, "_ca_password_timer"):
+            self._ca_password_timer.start(150)
+
+    def check_ca_password(self):
+        if not hasattr(self, "ca_password_status"):
+            return
+        if not self.project or not self.engine or self.project.ca_key_encrypted is not True:
+            self.ca_password_status.setText("")
+            return
+        password = self.icapass.text()
+        if not password:
+            self.ca_password_status.setText("")
+            return
+        int_key = Path(self.project.workspace) / "intermediate-ca" / "private" / "intermediate-ca.key.pem"
+        if not int_key.exists():
+            self.ca_password_status.setText("")
+            return
+        try:
+            self.engine.verify_ca_password(int_key, password)
+        except Exception:
+            self.ca_password_status.setText("✗ Incorrect CA password")
+            self.ca_password_status.setStyleSheet("color: #dc2626; font-weight: 600;")
+        else:
+            self.ca_password_status.setText("✓ CA password verified")
+            self.ca_password_status.setStyleSheet("color: #16a34a; font-weight: 600;")
 
     def update_issue_preview(self):
         if not hasattr(self, "issue_preview"):
