@@ -6,7 +6,7 @@ import re
 from inspect import signature
 from pathlib import Path
 
-from ica.openssl_engine import OpenSSLEngine, Subject, normalize_application_uri, normalize_sans
+from ica.openssl_engine import OpenSSLEngine, OpenSSLError, Subject, normalize_application_uri, normalize_sans
 from ica.profiles import PROFILES
 from ica.project import Project
 
@@ -217,6 +217,36 @@ def test_issue_requires_ca_password_for_encrypted_project(tmp_path: Path):
         assert "encrypted CA keys" in str(exc)
     else:
         raise AssertionError("Expected encrypted CA issuance without CA password to fail")
+
+
+def test_issue_with_wrong_ca_password_gives_friendly_error(tmp_path: Path):
+    log: list[str] = []
+    engine = OpenSSLEngine(logger=log.append)
+    workspace = tmp_path / "wrong-password-pki"
+    project = Project(str(workspace), "Lab", "Lab PKI", "local")
+    project.save()
+    engine.create_pki(workspace, Subject("Lab Root", "Lab"), Subject("Lab Issuing", "Lab"), "ca-password")
+
+    try:
+        engine.issue_server(
+            workspace,
+            project.device_folder("lab-edge"),
+            Subject("lab-edge.local", "Lab"),
+            ["lab-edge.local", "192.168.1.20"],
+            "definitely-the-wrong-password",
+            "",
+        )
+    except OpenSSLError as exc:
+        message = str(exc)
+        assert "Incorrect password" in message
+        assert "bad decrypt" not in message.lower()
+        assert "pkcs12" not in message.lower()
+    else:
+        raise AssertionError("Expected issuance with an incorrect CA password to fail")
+
+    assert any("bad decrypt" in entry.lower() or "maybe wrong password" in entry.lower() for entry in log), (
+        "Expected the raw OpenSSL diagnostic to still reach the activity log"
+    )
 
 
 def test_package_existing_requires_password_for_encrypted_private_key(tmp_path: Path):

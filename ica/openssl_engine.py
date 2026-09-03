@@ -23,6 +23,14 @@ class OpenSSLError(RuntimeError):
     pass
 
 
+_PASSWORD_ERROR_SIGNATURES = ("bad decrypt", "bad password read", "maybe wrong password")
+
+
+def _looks_like_wrong_password(output: str) -> bool:
+    lowered = output.lower()
+    return any(signature in lowered for signature in _PASSWORD_ERROR_SIGNATURES)
+
+
 def is_encrypted_private_key(path: Path) -> bool:
     text = path.read_text(encoding="utf-8", errors="ignore")
     return "ENCRYPTED PRIVATE KEY" in text or "Proc-Type: 4,ENCRYPTED" in text
@@ -143,6 +151,13 @@ class OpenSSLEngine:
             proc = subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=False)
             output = (proc.stdout + proc.stderr).strip()
             if proc.returncode:
+                if password is not None and _looks_like_wrong_password(output):
+                    self.logger(output)
+                    raise OpenSSLError(
+                        "Incorrect password: OpenSSL could not decrypt the private key with "
+                        "the password you entered. Verify the password and try again. The "
+                        "full OpenSSL error was written to the activity log."
+                    )
                 raise OpenSSLError(output or f"OpenSSL exited with status {proc.returncode}")
             if output:
                 self.logger(output)
