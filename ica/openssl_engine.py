@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from .profiles import CertificateProfile, PROFILES
+from .svm_packaging import write_svm_deploy_script
 from .trust_scripts import create_trust_bundle
 
 
@@ -478,6 +479,285 @@ class OpenSSLEngine:
             result["archive"] = archive_path
         return result
 
+    def issue_sixview_manager_https(self, workspace: Path, output: Path, subject: Subject,
+                                     sans: Iterable[str], ca_password: str, key_password: str,
+                                     days: int | None = None,
+                                     reissue: str = "new") -> dict[str, Path]:
+        profile = PROFILES["sixview_manager_https_server"]
+        raw_sans = list(sans)
+        requested_sans = normalize_sans(raw_sans)
+        existing_key, archive = self._prepare_reissue(output, reissue)
+        result = self.issue_server(
+            workspace, output, subject, raw_sans, ca_password, key_password,
+            profile=profile, days=days, digest=profile.leaf_digest or "SHA-256",
+            key_type=profile.leaf_key_type or "RSA",
+            key_size_or_curve=profile.leaf_key_size_or_curve or "RSA 2048",
+            existing_key=existing_key,
+        )
+
+        csr = output / "server.csr"
+        result["csr"].rename(csr)
+        result["csr"] = csr
+        rsa_key = output / "private-key-rsa.pem"
+        rsa_args = ["rsa", "-in", str(result["private_key"]), "-out", str(rsa_key), "-traditional"]
+        if key_password:
+            rsa_args += ["-passin", "file:{KEYIN}", "-aes256", "-passout", "file:{KEYOUT}"]
+            self._run(*rsa_args, passwords={"{KEYIN}": key_password, "{KEYOUT}": key_password})
+        else:
+            self.run(*rsa_args)
+        server_key = output / "server.key"
+        shutil.copy2(rsa_key, server_key)
+        server_certificate = output / "server.crt"
+        shutil.copy2(result["fullchain"], server_certificate)
+
+        checks = self._validate_sixview_manager_package(
+            result, server_certificate, server_key, csr, raw_sans, key_password)
+        report = output / "certificate-report.txt"
+        report.write_text(
+            "Profile: SixView Manager HTTPS Server\n"
+            f"Server: {subject.common_name}\nCommon Name: {subject.common_name}\n"
+            f"SANs: {', '.join(requested_sans)}\nKey: RSA 2048\n"
+            "Extended Key Usage: serverAuth\n"
+            "Key Usage: digitalSignature, keyEncipherment\nCA: FALSE\n\n"
+            "Validation results:\n"
+            + "\n".join(f"{check}: PASS" for check in checks)
+            + "\n\n"
+            + self.inspect_certificate(result["certificate"]) + "\n\n"
+            + self.verify_chain(result["certificate"], result["ca_chain"]) + "\n",
+            encoding="utf-8",
+        )
+        guide = output / "installation-guide.txt"
+        guide.write_text(
+            "SIXVIEW MANAGER HTTPS SERVER CERTIFICATE\n\n"
+            "Generated files\n\n"
+            "server.crt\n    HTTPS server chain intended for SixView Manager: leaf certificate followed by the issuing intermediate CA.\n"
+            "server.key\n    Matching RSA private key. It follows the private-key encryption choice made during issuance.\n"
+            "server.csr\n    Certificate Signing Request used during issuance, with the same key, Common Name, and SANs.\n"
+            "certificate.pem\n    Leaf SixView Manager certificate only. Use this instead of server.crt only if the installed SVM version requires a leaf-only file.\n"
+            "private-key.pem\n    Standard ICA-generated RSA private key.\n"
+            "private-key-rsa.pem\n    Traditional PKCS#1 RSA form of the private key.\n"
+            "fullchain.pem\n    Leaf certificate followed by the issuing intermediate CA; the root CA is intentionally excluded.\n"
+            "ca-chain.pem\n    Issuing intermediate and root CA certificates for trust and validation.\n\n"
+            "SixView Manager legacy documentation explicitly refers to server.crt, server.key, and server.csr. "
+            "SVM commonly listens for HTTPS on TCP 18081.\n\n"
+            "VERIFIED SVM 3.1.0 CONTAINER LAYOUT\n\n"
+            "On a verified SVM 3.1.0 Podman installation, the Node service on TCP 18081 loaded:\n"
+            "    /opt/svm/ssl/server.crt\n"
+            "    /opt/svm/ssl/server.key\n\n"
+            "The bundled server.crt on that installation was a single self-signed leaf certificate. "
+            "ICA generates server.crt as leaf plus issuing intermediate, which is preferred for normal TLS chain presentation. "
+            "If a target SVM release rejects that file, use the leaf-only certificate.pem after validating the behavior. "
+            "The active SVM 3.1.0 server.key was unencrypted, and the reviewed installer does not configure a TLS private-key passphrase. "
+            "Encrypted server.key compatibility is therefore unverified. If the target requires an unencrypted deployment key, explicitly choose that option in ICA and complete its security warning; ICA never weakens the key policy silently.\n\n"
+            "These paths were verified for the SVM 3.1.0 container image only. Confirm the active paths on every target version before deployment. "
+            "Files changed only inside a running container may be lost when the container is recreated; use administrator-approved persistent bind mounts or rebuild the image after validating the deployment model.\n\n"
+            "VERIFIED INSTALLER PERSISTENCE MODEL\n\n"
+            "The reviewed SVM Python installer creates the managed Podman Quadlet at:\n"
+            "    /etc/containers/systemd/sixview-manager.container\n\n"
+            "Its SVM container currently bind-mounts only svm_install/svm_config/config.json, so certificates copied directly into the running container are not persistent. "
+            "For this installer, preserve a host svm_install/svm_ssl directory and add individual read-only Quadlet mounts for the active files:\n"
+            "    Volume=<HOST-SVM-SSL>/server.crt:/opt/svm/ssl/server.crt:ro,Z\n"
+            "    Volume=<HOST-SVM-SSL>/server.key:/opt/svm/ssl/server.key:ro,Z\n\n"
+            "Replace <HOST-SVM-SSL> with the absolute host path. Do not mount an empty directory over /opt/svm/ssl because that would hide other SSL assets supplied by the image. "
+            "After changing a Quadlet, reload systemd and restart the SVM service only during an approved maintenance window, then verify the presented certificate on TCP 18081.\n\n"
+            "ICA includes deploy-svm-certificate.sh to perform this guarded workflow. Review it and the detected paths first, then run it from the generated package during an approved maintenance window:\n"
+            "    sudo ./deploy-svm-certificate.sh\n\n"
+            "The script requires typed DEPLOY confirmation, validates the certificate and key, creates a root-only backup and rollback script, installs individual persistent mounts, restarts SVM, and verifies the certificate presented on TCP 18081.\n\n"
+            "Back up the existing SVM certificate and private key before replacement. Do not overwrite any file until its active path, service ownership, permissions, and persistence mechanism are confirmed. "
+            "The installed private key must not be group/world-readable or executable. Set ownership to the SVM service account and use mode 0600, or mode 0640 only when a dedicated service group requires access.\n\n"
+            "Discovery commands\n\n"
+            "sudo grep -RniE 'server\\.crt|server\\.key|SSLCertificate|ssl_certificate|ssl_certificate_key|18081' /etc /usr/local/redlion 2>/dev/null\n\n"
+            "sudo find /etc /usr/local/redlion -type f \\( -name \"*.crt\" -o -name \"*.key\" -o -name \"*.pem\" \\) -ls 2>/dev/null\n\n"
+            "For a Podman deployment:\n"
+            "sudo podman exec svm_container ls -la /opt/svm/ssl\n"
+            "openssl s_client -connect 127.0.0.1:18081 -servername <SVM-DNS-NAME> -showcerts </dev/null\n\n"
+            "Replace <SVM-DNS-NAME> with the actual DNS name; do not type the angle brackets literally.\n",
+            encoding="utf-8",
+        )
+        deploy_script = write_svm_deploy_script(output)
+        result.update(private_key_rsa=rsa_key, server_certificate=server_certificate,
+                      server_key=server_key, report=report, installation_guide=guide,
+                      deploy_script=deploy_script)
+        if archive:
+            result["archive"] = archive
+        return result
+
+    def package_existing_sixview_manager_https(
+            self, certificate: Path, private_key: Path, ca_chain: Path,
+            output: Path, key_password: str = "", csr: Path | None = None) -> dict[str, Path]:
+        if len(split_pem_certificates(certificate.read_bytes())) != 1:
+            raise ValueError(
+                "Select the leaf-only certificate.pem file, not server.crt or fullchain.pem.")
+        source_hashes = {
+            path: path.read_bytes() for path in (certificate, private_key, ca_chain)
+        }
+        result = self.package_existing(
+            certificate, private_key, ca_chain, output, key_password)
+        certificate_text = self.inspect_certificate(result["certificate"])
+        if "Public Key Algorithm: rsaEncryption" not in certificate_text:
+            raise OpenSSLError("The SixView Manager certificate must use an RSA public key.")
+        if "TLS Web Server Authentication" not in certificate_text:
+            raise OpenSSLError("The SixView Manager certificate must contain serverAuth EKU.")
+        if "TLS Web Client Authentication" in certificate_text:
+            raise OpenSSLError("The SixView Manager certificate must not contain clientAuth EKU.")
+        if "CA:FALSE" not in certificate_text:
+            raise OpenSSLError("The SixView Manager certificate must be marked CA:FALSE.")
+        if "Digital Signature" not in certificate_text or "Key Encipherment" not in certificate_text:
+            raise OpenSSLError("The SixView Manager certificate does not have the required HTTPS key usage.")
+
+        rsa_key = output / "private-key-rsa.pem"
+        rsa_args = ["rsa", "-in", str(result["private_key"]), "-out", str(rsa_key), "-traditional"]
+        if key_password:
+            rsa_args += ["-passin", "file:{KEYIN}", "-aes256", "-passout", "file:{KEYOUT}"]
+            self._run(*rsa_args, passwords={"{KEYIN}": key_password, "{KEYOUT}": key_password})
+        else:
+            self.run(*rsa_args)
+        server_key = output / "server.key"
+        shutil.copy2(rsa_key, server_key)
+        server_certificate = output / "server.crt"
+        shutil.copy2(result["fullchain"], server_certificate)
+
+        server_csr: Path | None = None
+        if csr is not None:
+            if not csr.is_file():
+                raise FileNotFoundError(f"CSR file not found: {csr}")
+            csr_public_key = self.run("req", "-in", str(csr), "-pubkey", "-noout")
+            certificate_public_key = self.run(
+                "x509", "-in", str(result["certificate"]), "-pubkey", "-noout")
+            if re.sub(r"\s+", "", csr_public_key) != re.sub(r"\s+", "", certificate_public_key):
+                raise OpenSSLError("The selected CSR public key does not match the certificate.")
+            server_csr = output / "server.csr"
+            shutil.copy2(csr, server_csr)
+
+        if not self.verify_key_matches(server_certificate, server_key, key_password):
+            raise OpenSSLError("server.key does not match the leaf certificate in server.crt.")
+        if result["root"].read_bytes() in server_certificate.read_bytes():
+            raise OpenSSLError("The root CA must not be included in server.crt.")
+        if len(split_pem_certificates(server_certificate.read_bytes())) < 2:
+            raise OpenSSLError("server.crt must contain the leaf certificate and issuing intermediate CA.")
+
+        report = output / "certificate-report.txt"
+        report.write_text(
+            "Profile: SixView Manager HTTPS Server\n"
+            "Package source: Existing certificate and private key (no certificate issued)\n"
+            "Certificate / Key Match: PASS\nCertificate uses RSA: PASS\n"
+            "Extended Key Usage serverAuth: PASS\nExtended Key Usage excludes clientAuth: PASS\n"
+            "Basic Constraints CA:FALSE: PASS\nHTTPS Key Usage: PASS\n"
+            "Chain Validation: PASS\nserver.crt Root Exclusion: PASS\n"
+            f"CSR preserved and matched: {'PASS' if server_csr else 'NOT PROVIDED'}\n\n"
+            + certificate_text + "\n\n"
+            + self.verify_chain(result["certificate"], result["ca_chain"]) + "\n",
+            encoding="utf-8",
+        )
+        guide = output / "installation-guide.txt"
+        guide.write_text(
+            "SIXVIEW MANAGER HTTPS SERVER CERTIFICATE\n\n"
+            "This deployment package was created from an existing certificate and private key. "
+            "ICA did not issue, renew, or modify the source identity.\n\n"
+            "Use server.crt and server.key with deploy-svm-certificate.sh. server.crt contains "
+            "the leaf certificate followed by the issuing intermediate CA; the root is excluded.\n"
+            + ("server.csr preserves the supplied matching certificate request.\n" if server_csr else
+               "No CSR was supplied; certificate/key/chain validation is unaffected.\n")
+            + "\nReview the deployment script before running it. On the verified SVM 3.1.0 Podman "
+            "installation, run sudo ./deploy-svm-certificate.sh during an approved maintenance window. "
+            "The script validates the package, requires typed confirmation, backs up the current "
+            "Quadlet and identity, installs persistent read-only mounts, restarts SVM, verifies TCP "
+            "18081, and creates a rollback script.\n",
+            encoding="utf-8",
+        )
+        deploy_script = write_svm_deploy_script(output)
+        for source, original in source_hashes.items():
+            if source.read_bytes() != original:
+                raise OpenSSLError(f"Source file changed while packaging: {source}")
+        result.update(private_key_rsa=rsa_key, server_certificate=server_certificate,
+                      server_key=server_key, report=report,
+                      installation_guide=guide, deploy_script=deploy_script)
+        if server_csr:
+            result["csr"] = server_csr
+        return result
+
+    def _validate_sixview_manager_package(self, result: dict[str, Path], server_certificate: Path,
+                                          server_key: Path, csr: Path, requested_sans: list[str],
+                                          key_password: str) -> list[str]:
+        normalized_sans = normalize_sans(requested_sans)
+        certificate = result["certificate"]
+        certificate_text = self.inspect_certificate(certificate)
+        self.run("pkey", "-in", str(server_key), "-noout",
+                 *(["-passin", "file:{PASSFILE}"] if key_password else []),
+                 password=key_password if key_password else None)
+        if "Public Key Algorithm: rsaEncryption" not in certificate_text:
+            raise OpenSSLError("The SixView Manager certificate must use an RSA public key.")
+        if "TLS Web Client Authentication" in certificate_text:
+            raise OpenSSLError("The SixView Manager certificate must not contain clientAuth EKU.")
+        self.validate_server_certificate(certificate, result["private_key"], result["ca_chain"], requested_sans, key_password)
+
+        certificate_public_key = self.run("x509", "-in", str(certificate), "-pubkey", "-noout")
+        csr_public_key = self.run("req", "-in", str(csr), "-pubkey", "-noout")
+        private_key_args = ["pkey", "-in", str(result["private_key"]), "-pubout"]
+        if key_password:
+            private_key_args += ["-passin", "file:{PASSFILE}"]
+        private_public_key = self.run(
+            *private_key_args, password=key_password if key_password else None)
+        if re.sub(r"\s+", "", certificate_public_key) != re.sub(r"\s+", "", csr_public_key):
+            raise OpenSSLError("The CSR public key does not match the issued certificate.")
+        if re.sub(r"\s+", "", csr_public_key) != re.sub(r"\s+", "", private_public_key):
+            raise OpenSSLError("The CSR public key does not match the private key.")
+        certificate_subject = self.run(
+            "x509", "-in", str(certificate), "-noout", "-subject", "-nameopt", "RFC2253")
+        csr_subject = self.run(
+            "req", "-in", str(csr), "-noout", "-subject", "-nameopt", "RFC2253")
+        normalized_certificate_subject = certificate_subject.removeprefix("subject=").strip()
+        normalized_csr_subject = csr_subject.removeprefix("subject=").strip()
+        if normalized_certificate_subject != normalized_csr_subject:
+            raise OpenSSLError("The CSR subject does not match the issued certificate subject.")
+        csr_san_text = self.run("req", "-in", str(csr), "-noout", "-text")
+        certificate_san_text = self.run("x509", "-in", str(certificate), "-noout", "-ext", "subjectAltName")
+        san_pattern = r"(?:DNS:|IP Address:)[^,\s]+"
+        csr_sans = {value.replace("IP Address:", "IP:").lower() for value in re.findall(san_pattern, csr_san_text)}
+        certificate_sans = {value.replace("IP Address:", "IP:").lower() for value in re.findall(san_pattern, certificate_san_text)}
+        if csr_sans != certificate_sans or certificate_sans != {value.lower() for value in normalized_sans}:
+            raise OpenSSLError("CSR and certificate SAN entries do not match the requested identities.")
+
+        now = datetime.now(timezone.utc)
+        date_text = self.run("x509", "-in", str(certificate), "-noout", "-dates")
+        dates = dict(line.split("=", 1) for line in date_text.splitlines() if "=" in line)
+        not_before = datetime.strptime(dates["notBefore"], "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+        not_after = datetime.strptime(dates["notAfter"], "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+        if not_before > now or not_after <= now or not_after <= not_before:
+            raise OpenSSLError("The SixView Manager certificate validity dates are not sane.")
+        self.verify_chain(result["intermediate"], result["root"])
+
+        leaf_bytes = split_pem_certificates(certificate.read_bytes())[0]
+        intermediate_bytes = split_pem_certificates(result["intermediate"].read_bytes())[0]
+        root_bytes = split_pem_certificates(result["root"].read_bytes())[0]
+        for chain_name, chain_path in (("fullchain.pem", result["fullchain"]), ("server.crt", server_certificate)):
+            chain_certificates = split_pem_certificates(chain_path.read_bytes())
+            if chain_certificates != [leaf_bytes, intermediate_bytes]:
+                raise OpenSSLError(f"{chain_name} must contain the leaf first and issuing intermediate second.")
+            if root_bytes in chain_certificates:
+                raise OpenSSLError(f"The root CA must not be included in {chain_name}.")
+        if not self.verify_key_matches(server_certificate, server_key, key_password):
+            raise OpenSSLError("server.key does not match the leaf certificate in server.crt.")
+        for path in server_certificate.parent.rglob("*"):
+            if path.is_file() and path.name in {"root-ca.key.pem", "intermediate-ca.key.pem"}:
+                raise OpenSSLError("A CA private key was found in the SixView Manager deployment output.")
+
+        return [
+            "Certificate parses successfully", "Private key parses successfully",
+            "Certificate / Key Match", "Certificate uses RSA", "CSR parses successfully",
+            "CSR / Key Match", "CSR public key matches certificate public key",
+            "CSR / Certificate Subject Match",
+            "CSR / Certificate SAN Match", "Requested SANs present",
+            "DNS SAN encoding", "IP SAN encoding", "Duplicate SANs removed",
+            "Basic Constraints CA:FALSE", "EKU serverAuth", "EKU excludes clientAuth",
+            "Key Usage digitalSignature", "Key Usage keyEncipherment",
+            "Certificate validity dates sane", "Chain Validation",
+            "Intermediate chains to root", "fullchain.pem PEM Order",
+            "server.crt PEM Order", "server.crt leaf first",
+            "server.crt issuing intermediate second", "Root Excluded From Server Chain",
+            "server.key matches server.crt", "No CA private keys in deployment output",
+        ]
+
     @staticmethod
     def _rename_profile_files(result: dict[str, Path], output: Path, prefix: str) -> dict[str, Path]:
         mapping = {
@@ -506,7 +786,7 @@ class OpenSSLEngine:
             if reissue == "existing":
                 raise ValueError("Cannot reuse a private key because no existing issuance was found.")
             return None, None
-        archive = output / "archive" / datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
+        archive = output / "archive" / datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S_%f")
         archive.mkdir(parents=True, exist_ok=False)
         old_key = output / key_name
         if reissue == "existing" and not old_key.exists():

@@ -47,7 +47,7 @@ class Project:
             "root-ca/certs", "root-ca/private", "intermediate-ca/certs",
             "intermediate-ca/private", "devices", "pending-requests",
             "trust-installers", "backups", "reports", "mqtt/brokers",
-            "mqtt/clients", "opcua/servers", "opcua/clients",
+            "mqtt/clients", "opcua/servers", "opcua/clients", "svm/servers",
         ):
             (self.path / relative).mkdir(parents=True, exist_ok=True)
 
@@ -57,10 +57,14 @@ class Project:
 
     @classmethod
     def load(cls, workspace: str | Path) -> "Project":
-        path = Path(workspace) / MANIFEST_NAME
+        workspace_path = Path(workspace).resolve()
+        path = workspace_path / MANIFEST_NAME
         if not path.exists():
             raise FileNotFoundError(f"This is not an Industrial Certificate Assistant project: {path}")
         data = json.loads(path.read_text(encoding="utf-8"))
+        # The project directory can be moved or opened on another operating
+        # system; the selected manifest location is authoritative for this run.
+        data["workspace"] = str(workspace_path)
         data["version"] = 2
         return cls(**data)
 
@@ -81,6 +85,9 @@ class Project:
 
     def opcua_client_folder(self, name: str) -> Path:
         return self.path / "opcua" / "clients" / safe_name(name)
+
+    def svm_server_folder(self, name: str) -> Path:
+        return self.path / "svm" / "servers" / safe_name(name)
 
     @staticmethod
     def legacy_files(workspace: str | Path) -> dict[str, Path]:

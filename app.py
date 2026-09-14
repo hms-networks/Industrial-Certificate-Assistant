@@ -21,6 +21,22 @@ from ica.project import Project, safe_name
 from ica.trust_scripts import create_trust_bundle
 from app_version import APP_VERSION as __version__
 
+
+ISSUE_PROFILE_TITLES = (
+    "Crimson 3.2 HTTPS Server",
+    "Red Lion RAM HTTPS Server",
+    "SixView Manager HTTPS Server",
+    "MQTT Broker",
+    "MQTT Client/Device",
+    "OPC UA Server",
+    "OPC UA Client",
+)
+
+IMPORT_PACKAGE_TITLES = (
+    "Crimson HTTPS package",
+    "SixView Manager HTTPS Server package",
+)
+
 try:
     import pyi_splash
 except Exception:
@@ -83,7 +99,7 @@ class MainWindow(QMainWindow):
         masthead_layout = QHBoxLayout(masthead); masthead_layout.setContentsMargins(20, 10, 18, 10)
         brand = QVBoxLayout(); brand.setSpacing(1)
         title = QLabel("Industrial Certificate Assistant"); title.setObjectName("brandTitle")
-        subtitle = QLabel("Guided PKI Management for Crimson 3.2, MQTT, and OPC UA"); subtitle.setObjectName("brandSubtitle")
+        subtitle = QLabel("Guided PKI Management for Industrial HTTPS, MQTT, and OPC UA"); subtitle.setObjectName("brandSubtitle")
         brand.addWidget(title); brand.addWidget(subtitle)
         masthead_layout.addLayout(brand); masthead_layout.addStretch(1)
         self.open_project_button = QPushButton("Open project")
@@ -397,18 +413,53 @@ class MainWindow(QMainWindow):
     def import_page(self):
         page, form = self.workflow_page(
             "Use an existing certificate",
-            "Validate a certificate and matching private key, add the issuing CA chain, and build a Crimson-ready package.")
+            "Validate an existing certificate and matching private key, add the issuing CA chain, and build a deployment package without reissuing the identity.")
+        self.import_profile = QComboBox(); self.import_profile.addItems(IMPORT_PACKAGE_TITLES)
+        existingw, self.iexistingpackage = self.path_field(True, self.load_existing_svm_package)
         certw, self.icert = self.path_field(); keyw, self.ikey = self.path_field(); caw, self.ica = self.path_field()
+        csrw, self.icsr = self.path_field()
         outw, self.iimportout = self.path_field(True); self.ipass = self.password_field()
+        self.set_help(self.import_profile, "Choose the deployment package to create from the existing identity.")
+        self.set_help(self.iexistingpackage, "Optional existing ICA SVM package folder. Selecting it fills the standard certificate, key, chain, and CSR files automatically.")
         self.set_help(self.icert, "PEM certificate file to validate and package.")
         self.set_help(self.ikey, "Private key that must match the selected certificate.")
         self.set_help(self.ica, "CA chain PEM used to validate and build full chain outputs.")
+        self.set_help(self.icsr, "Optional original CSR. SVM packaging preserves it after verifying that its public key matches the certificate.")
         self.set_help(self.ipass, "Password for the private key if the key is encrypted.")
-        self.set_help(self.iimportout, "Output folder for the generated Crimson-ready package.")
+        self.set_help(self.iimportout, "New empty output folder. Source certificate, key, chain, and CSR files are not modified.")
+        form.addRow("Package type", self.import_profile)
+        form.addRow("Existing SVM package folder", existingw)
         form.addRow("Certificate", certw); form.addRow("Private key", keyw); form.addRow("CA chain", caw)
-        form.addRow("Private-key password", self.ipass); form.addRow("New Crimson package folder", outw)
-        form.addRow(self.primary_button("Validate and create Crimson package", self.validate_import))
+        form.addRow("Original CSR (optional)", csrw)
+        form.addRow("Private-key password", self.ipass); form.addRow("New package folder", outw)
+        form.addRow(self.primary_button("Validate and create deployment package", self.validate_import))
         return page
+
+    def load_existing_svm_package(self, value: str | Path):
+        folder = Path(value)
+        required = {
+            self.icert: folder / "certificate.pem",
+            self.ikey: folder / "private-key.pem",
+            self.ica: folder / "ca-chain.pem",
+        }
+        missing = [path.name for path in required.values() if not path.is_file()]
+        if missing:
+            QMessageBox.warning(
+                self, "Incomplete SVM package",
+                "The selected folder is not a complete ICA SVM package; missing: "
+                + ", ".join(missing))
+            return
+        self.import_profile.setCurrentText("SixView Manager HTTPS Server package")
+        for field, path in required.items():
+            field.setText(str(path))
+        for name in ("server.csr", "request.csr.pem"):
+            candidate = folder / name
+            if candidate.is_file():
+                self.icsr.setText(str(candidate))
+                break
+        else:
+            self.icsr.clear()
+        self.iimportout.setText(str(folder.with_name(folder.name + "-deployment")))
 
     def csr_page(self):
         page, form = self.workflow_page(
@@ -510,14 +561,7 @@ class MainWindow(QMainWindow):
             "Issue and package certificates for Crimson HTTPS, MQTT, and OPC UA workflows using the loaded PKI project.")
         wsw, self.iws = self.path_field(True, self.load_project)
         self.issue_protocol = QComboBox()
-        self.issue_protocol.addItems([
-            "Crimson 3.2 HTTPS Server",
-            "Red Lion RAM HTTPS Server",
-            "MQTT Broker",
-            "MQTT Client/Device",
-            "OPC UA Server",
-            "OPC UA Client",
-        ])
+        self.issue_protocol.addItems(ISSUE_PROFILE_TITLES)
         self.mqtt_role = QComboBox(); self.mqtt_role.addItems(["Broker", "Client/Device"])
         self.ram_reissue = QComboBox(); self.ram_reissue.addItems([
             "New issuance",
@@ -541,7 +585,7 @@ class MainWindow(QMainWindow):
         self.set_help(self.iws, "Project workspace containing the issuing CA certificates and keys.")
         self.set_help(self.issue_protocol, "Choose which certificate profile to issue.")
         self.set_help(self.mqtt_role, "Broker certificates identify MQTT servers; client certificates identify connecting devices.")
-        self.set_help(self.idevice, "Device or broker name used for folder naming and default certificate identity.")
+        self.set_help(self.idevice, "Device, server, or broker name used for folder naming and default certificate identity.")
         self.set_help(self.iclientid, "MQTT Client ID. Required for MQTT client certificates.")
         self.set_help(self.iapplication_uri, "OPC UA ApplicationUri. It must exactly match the application's own endpoint identity, for example urn:device.local:server or urn:device.local:client.")
         self.set_help(self.icn_override, "Optional explicit Common Name override. Leave blank to use protocol defaults.")
@@ -611,8 +655,8 @@ class MainWindow(QMainWindow):
         note.setWordWrap(True); form.addRow(note)
         self.issue_action = self.primary_button("Issue protocol certificate package", self.issue)
         form.addRow(self.issue_action)
-        self.set_help(self.ram_reissue, "Choose whether to create a new RAM package, reuse its existing device key, or rotate the key. Previous issuance files are archived automatically.")
-        form.addRow("RAM issuance mode", self.ram_reissue)
+        self.set_help(self.ram_reissue, "Choose whether to create a new HTTPS package, reuse its existing server key, or rotate the key. Previous issuance files are archived automatically.")
+        form.addRow("Issuance mode", self.ram_reissue)
         self.issue_form = form
         self.update_issue_mode()
         return page
@@ -780,6 +824,8 @@ class MainWindow(QMainWindow):
         protocol = self.issue_protocol.currentText()
         if protocol == "Red Lion RAM HTTPS Server":
             return "ram", "server"
+        if protocol == "SixView Manager HTTPS Server":
+            return "svm", "server"
         if protocol == "MQTT Broker":
             return "mqtt", "broker"
         if protocol == "MQTT Client/Device":
@@ -817,11 +863,11 @@ class MainWindow(QMainWindow):
                 self.mqtt_role.setCurrentText("Client/Device")
 
         self._set_row_visible(self.mqtt_role, is_mqtt)
-        self._set_row_visible(self.ram_reissue, mode == "ram")
+        self._set_row_visible(self.ram_reissue, mode in {"ram", "svm"})
         self._set_row_visible(self.iclientid, is_mqtt_client)
         self._set_row_visible(self.iapplication_uri, is_opcua)
         self._set_row_visible(self.icn_override, is_mqtt or is_opcua)
-        protects_key = is_mqtt or is_opcua
+        protects_key = is_mqtt or is_opcua or mode == "svm"
         self._set_row_visible(self.issue_keyprotect, protects_key)
         self._set_row_visible(self.issue_keypass, protects_key and self.issue_keyprotect.isChecked())
         self._set_row_visible(self.issue_keypassconfirm, protects_key and self.issue_keyprotect.isChecked())
@@ -841,12 +887,19 @@ class MainWindow(QMainWindow):
         self._set_row_visible(self.idns, True)
         self._set_row_visible(self.iip, True)
         self._set_row_visible(self.iextra, True)
-        if mode == "ram" and self.idns.text().strip() == (self.project.dns_suffix if self.project else ""):
+        if mode in {"ram", "svm"} and self.idns.text().strip() == (self.project.dns_suffix if self.project else ""):
             with QSignalBlocker(self.idns):
                 self.idns.clear()
         if mode == "ram" and self.issue_days.value() == 397:
             with QSignalBlocker(self.issue_days):
                 self.issue_days.setValue(3510)
+        elif mode == "svm" and self.issue_days.value() == 3510:
+            with QSignalBlocker(self.issue_days):
+                self.issue_days.setValue(397)
+
+        name_label = self.issue_form.labelForField(self.idevice)
+        if name_label is not None:
+            name_label.setText("Server name" if mode == "svm" else "Device/Broker name")
 
         self.issue_action.setEnabled(True)
         self.issue_action.setText("Issue protocol certificate package")
@@ -878,6 +931,11 @@ class MainWindow(QMainWindow):
                 output = self.project.path / "devices"
             if dns_name:
                 values.append(dns_name)
+        elif mode == "svm":
+            if dns_name:
+                values.append(dns_name)
+            cn_value = dns_name or name
+            output = self.project.svm_server_folder(name) if name else self.project.path / "svm" / "servers"
         elif mode == "opcua":
             suffix = dns_name.strip(".") or self.project.dns_suffix
             host = (name if "." in name else f"{name}.{suffix}").lower() if name else dns_name
@@ -925,7 +983,7 @@ class MainWindow(QMainWindow):
                 continue
         self.issue_ip_warning.setText(
             "IP addresses included in a certificate are fixed identities. If this interface receives a different IP address later, the HTTPS certificate will no longer match that address and must be reissued. Prefer a stable DNS name when available."
-            if mode == "ram" and has_ip else ""
+            if mode in {"ram", "svm"} and has_ip else ""
         )
         self.update_issue_preview()
         if hasattr(self, "_ca_password_timer"):
@@ -989,6 +1047,14 @@ class MainWindow(QMainWindow):
                 "trust-installers/install-trust-windows.ps1",
             ]
             header = "Red Lion RAM HTTPS deployment package preview (RSA 2048 / SHA-256)"
+        elif mode == "svm":
+            files = [
+                "certificate.pem", "private-key.pem", "private-key-rsa.pem",
+                "ca-chain.pem", "fullchain.pem", "server.crt", "server.key",
+                "server.csr", "certificate-report.txt", "installation-guide.txt",
+                "deploy-svm-certificate.sh",
+            ]
+            header = "SixView Manager HTTPS deployment package preview (RSA 2048 / SHA-256)"
         elif mode == "opcua":
             prefix = "client" if role == "client" else "server"
             files = [
@@ -1090,6 +1156,12 @@ class MainWindow(QMainWindow):
                 if not key_password:
                     raise ValueError("Enter the private-key password to continue.")
                 self.ipass.setText(key_password)
+            if self.import_profile.currentText() == "SixView Manager HTTPS Server package":
+                csr_text = self.icsr.text().strip()
+                return self.engine.package_existing_sixview_manager_https(
+                    certificate, private_key, ca_chain, output, key_password,
+                    csr=Path(csr_text) if csr_text else None,
+                )
             return self.engine.package_existing(certificate, private_key, ca_chain, output, key_password)
         self.guard(work)
 
@@ -1189,6 +1261,20 @@ class MainWindow(QMainWindow):
                         "Reissue using existing private key": "existing",
                         "Reissue with new private key": "new",
                     }[self.ram_reissue.currentText()],
+                )
+            if mode == "svm":
+                if not self.idevice.text().strip():
+                    raise ValueError("Server name is required for the SixView Manager HTTPS profile.")
+                if not sans_values:
+                    raise ValueError("Provide at least one explicit DNS name or IP address for the SixView Manager HTTPS certificate.")
+                key_password = self.chosen_password(
+                    self.issue_keyprotect, self.issue_keypass,
+                    self.issue_keypassconfirm, "SixView Manager")
+                return self.engine.issue_sixview_manager_https(
+                    self.project.path, Path(self.iout.text()),
+                    Subject(self.icn.text(), self.project.organization), sans_values,
+                    ca_password, key_password, days=int(self.issue_days.value()),
+                    reissue=self._selected_reissue_mode(),
                 )
             if mode == "crimson":
                 if not self.iip.text().strip():

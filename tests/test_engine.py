@@ -3,9 +3,11 @@
 
 import json
 import re
+import subprocess
 from inspect import signature
 from pathlib import Path
 
+from app import IMPORT_PACKAGE_TITLES, ISSUE_PROFILE_TITLES
 from ica.openssl_engine import OpenSSLEngine, OpenSSLError, Subject, normalize_application_uri, normalize_sans
 from ica.profiles import PROFILES
 from ica.project import Project
@@ -91,6 +93,8 @@ def test_full_pki(tmp_path: Path):
     assert result["fullchain"].read_text().count("BEGIN CERTIFICATE") == 2
     assert result["windows_install"].exists()
     assert result["linux_install"].exists()
+    assert b"\r\n" not in result["linux_install"].read_bytes()
+    assert b"\r\n" not in result["linux_remove"].read_bytes()
 
 
 def test_issue_ram_https_package(tmp_path: Path):
@@ -125,6 +129,169 @@ def test_issue_ram_https_package(tmp_path: Path):
     assert deployment.find(b"BEGIN CERTIFICATE") < deployment.find(b"BEGIN RSA PRIVATE KEY")
     assert project.device_folder("RAMTEST01").joinpath("root-ca.pem").read_bytes() not in deployment
     assert result["readme_ram_https"].exists()
+
+
+def test_issue_sixview_manager_https_package(tmp_path: Path):
+    engine = OpenSSLEngine()
+    workspace = tmp_path / "svm-pki"
+    project = Project(str(workspace), "GregNet", "SVM PKI", "local")
+    project.save()
+    engine.create_pki(
+        workspace,
+        Subject("GregNet Industrial Root CA", "GregNet"),
+        Subject("GregNet Industrial Device Issuing CA", "GregNet"),
+        "",
+    )
+    output = project.svm_server_folder("svm-test")
+    result = engine.issue_sixview_manager_https(
+        workspace, output, Subject("svm-test.gregnet.local", "GregNet"),
+        ["svm-test.gregnet.local", "192.168.1.50", "svm-alt.gregnet.local",
+         "192.168.1.51", "SVM-TEST.GREGNET.LOCAL"],
+        "", "svm-key-password",
+    )
+
+    required = {
+        "certificate.pem", "private-key.pem", "private-key-rsa.pem", "ca-chain.pem",
+        "fullchain.pem", "server.crt", "server.key", "server.csr",
+        "certificate-report.txt", "installation-guide.txt", "deploy-svm-certificate.sh",
+    }
+    assert required <= {path.name for path in output.iterdir()}
+    certificate_text = engine.inspect_certificate(result["certificate"])
+    subject_text = engine.run("x509", "-in", str(result["certificate"]), "-noout", "-subject")
+    assert re.search(r"CN\s*=\s*svm-test\.gregnet\.local", subject_text)
+    assert "DNS:svm-test.gregnet.local" in certificate_text
+    assert "DNS:svm-alt.gregnet.local" in certificate_text
+    assert "IP Address:192.168.1.50" in certificate_text
+    assert "IP Address:192.168.1.51" in certificate_text
+    assert certificate_text.count("DNS:svm-test.gregnet.local") == 1
+    assert "TLS Web Server Authentication" in certificate_text
+    assert "TLS Web Client Authentication" not in certificate_text
+    assert "Digital Signature, Key Encipherment" in certificate_text
+    assert "CA:FALSE" in certificate_text
+    assert engine.verify_key_matches(result["certificate"], result["private_key"], "svm-key-password")
+    assert engine.verify_key_matches(result["certificate"], result["server_key"], "svm-key-password")
+    assert "ENCRYPTED" in result["private_key_rsa"].read_text(encoding="utf-8")
+    assert result["server_certificate"].read_bytes() == result["fullchain"].read_bytes()
+    assert result["server_certificate"].read_text().count("BEGIN CERTIFICATE") == 2
+    assert result["root"].read_bytes() not in result["server_certificate"].read_bytes()
+    assert "CSR / Certificate SAN Match: PASS" in result["report"].read_text(encoding="utf-8")
+    guide = result["installation_guide"].read_text(encoding="utf-8")
+    assert "TCP 18081" in guide
+    assert "/opt/svm/ssl/server.crt" in guide
+    assert "/opt/svm/ssl/server.key" in guide
+    assert "SVM 3.1.0 container image only" in guide
+    assert "may be lost when the container is recreated" in guide
+    assert "single self-signed leaf certificate" in guide
+    assert "Encrypted server.key compatibility is therefore unverified" in guide
+    assert "ICA never weakens the key policy silently" in guide
+    assert "/etc/containers/systemd/sixview-manager.container" in guide
+    assert "server.crt:/opt/svm/ssl/server.crt:ro,Z" in guide
+    assert "server.key:/opt/svm/ssl/server.key:ro,Z" in guide
+    assert "Do not mount an empty directory over /opt/svm/ssl" in guide
+    assert "use mode 0600" in guide
+    assert "sudo grep -RniE" in guide
+    deploy_script = result["deploy_script"]
+    deploy_text = deploy_script.read_text(encoding="utf-8")
+    assert deploy_script.stat().st_mode & 0o111
+    assert "Type DEPLOY" in deploy_text
+    assert "server.crt and server.key do not match" in deploy_text
+    assert "Encrypted server.key compatibility is unverified" in deploy_text
+    assert "podman cp" in deploy_text
+    assert "Volume=$SVM_SSL_DIR/server.crt:/opt/svm/ssl/server.crt:ro,Z" in deploy_text
+    assert "Volume=$SVM_SSL_DIR/server.key:/opt/svm/ssl/server.key:ro,Z" in deploy_text
+    assert "rollback_on_error" in deploy_text
+    assert "openssl s_client -connect 127.0.0.1:18081" in deploy_text
+    assert "for attempt in {1..30}" in deploy_text
+    assert "SVM did not present a parseable certificate on TCP 18081 within 30 seconds" in deploy_text
+    assert "command failed at line" in deploy_text
+    assert "2>/dev/null >\"$SERVED_CERTIFICATE\"" not in deploy_text
+    assert "rm -f /opt/svm/ssl" not in deploy_text
+    assert "root-ca.key.pem" not in deploy_text
+    assert "intermediate-ca.key.pem" not in deploy_text
+    subprocess.run(["bash", "-n", str(deploy_script)], check=True)
+
+    try:
+        engine.issue_sixview_manager_https(
+            workspace, output, Subject("svm-test.gregnet.local", "GregNet"),
+            ["svm-test.gregnet.local"], "", "svm-key-password", reissue="invalid",
+        )
+    except ValueError as exc:
+        assert "Reissue mode" in str(exc)
+    else:
+        raise AssertionError("Existing SVM output must not be silently overwritten")
+
+
+def test_sixview_manager_reissue_reuses_and_rotates_key(tmp_path: Path):
+    engine = OpenSSLEngine()
+    workspace = tmp_path / "svm-reissue"
+    project = Project(str(workspace), "GregNet", "SVM PKI", "local")
+    project.save()
+    engine.create_pki(workspace, Subject("GregNet Root", "GregNet"), Subject("GregNet Issuing", "GregNet"), "")
+    output = project.svm_server_folder("svm-test")
+    first = engine.issue_sixview_manager_https(
+        workspace, output, Subject("svm-test.local", "GregNet"),
+        ["svm-test.local", "10.0.0.1"], "", "",
+    )
+    first_key = first["private_key"].read_bytes()
+    reused = engine.issue_sixview_manager_https(
+        workspace, output, Subject("svm-test.local", "GregNet"),
+        ["svm-test.local", "10.0.0.2"], "", "", reissue="existing",
+    )
+    assert reused["private_key"].read_bytes() == first_key
+    assert reused["archive"].joinpath("server.crt").exists()
+
+    rotated = engine.issue_sixview_manager_https(
+        workspace, output, Subject("svm-test.local", "GregNet"),
+        ["svm-test.local", "10.0.0.3"], "", "", reissue="new",
+    )
+    assert rotated["private_key"].read_bytes() != first_key
+    assert rotated["archive"].joinpath("private-key.pem").exists()
+
+
+def test_package_existing_sixview_manager_identity_without_reissue(tmp_path: Path):
+    engine = OpenSSLEngine()
+    workspace = tmp_path / "existing-svm-pki"
+    project = Project(str(workspace), "GregNet", "SVM PKI", "local")
+    project.save()
+    engine.create_pki(
+        workspace, Subject("GregNet Root", "GregNet"),
+        Subject("GregNet Issuing", "GregNet"), "")
+    issued = engine.issue_sixview_manager_https(
+        workspace, project.svm_server_folder("svm-source"),
+        Subject("svm.example.local", "GregNet"),
+        ["svm.example.local", "192.168.1.50"], "", "")
+    source_files = (issued["certificate"], issued["private_key"], issued["ca_chain"], issued["csr"])
+    source_bytes = {path: path.read_bytes() for path in source_files}
+    source_serial = engine.run(
+        "x509", "-in", str(issued["certificate"]), "-noout", "-serial")
+
+    output = project.svm_server_folder("svm-imported")
+    packaged = engine.package_existing_sixview_manager_https(
+        issued["certificate"], issued["private_key"], issued["ca_chain"],
+        output, csr=issued["csr"])
+
+    assert all(path.read_bytes() == source_bytes[path] for path in source_files)
+    assert engine.run("x509", "-in", str(packaged["certificate"]), "-noout", "-serial") == source_serial
+    assert packaged["certificate"].read_bytes() == issued["certificate"].read_bytes()
+    assert packaged["private_key"].read_bytes() == issued["private_key"].read_bytes()
+    assert packaged["csr"].read_bytes() == issued["csr"].read_bytes()
+    assert packaged["server_certificate"].read_text().count("BEGIN CERTIFICATE") == 2
+    assert packaged["root"].read_bytes() not in packaged["server_certificate"].read_bytes()
+    assert engine.verify_key_matches(packaged["server_certificate"], packaged["server_key"], "")
+    assert packaged["deploy_script"].exists()
+    assert packaged["deploy_script"].stat().st_mode & 0o111
+    assert "no certificate issued" in packaged["report"].read_text(encoding="utf-8").lower()
+    assert "did not issue" in packaged["installation_guide"].read_text(encoding="utf-8").lower()
+    subprocess.run(["bash", "-n", str(packaged["deploy_script"])], check=True)
+
+    try:
+        engine.package_existing_sixview_manager_https(
+            issued["server_certificate"], issued["private_key"], issued["ca_chain"],
+            project.svm_server_folder("invalid-chain-input"))
+    except ValueError as exc:
+        assert "leaf-only certificate.pem" in str(exc)
+    else:
+        raise AssertionError("SVM import must reject a chain where a leaf input is required")
 
 
 def test_ram_reissue_reuses_key_and_archives_previous_certificate(tmp_path: Path):
@@ -336,6 +503,22 @@ def test_load_project_backfills_new_pki_fields(tmp_path: Path):
     assert project.pki_validity_days == 3650
 
 
+def test_load_project_uses_selected_folder_after_cross_platform_move(tmp_path: Path):
+    workspace = tmp_path / "moved-pki"
+    project = Project(str(workspace), "Portable Org", "Portable PKI", "local")
+    project.save()
+    manifest_data = json.loads(project.manifest.read_text(encoding="utf-8"))
+    manifest_data["workspace"] = r"C:\Users\operator\Desktop\Portable_PKI"
+    project.manifest.write_text(json.dumps(manifest_data, indent=2) + "\n", encoding="utf-8")
+
+    loaded = Project.load(workspace)
+
+    assert loaded.path == workspace.resolve()
+    assert loaded.manifest == workspace.resolve() / "ica-project.json"
+    assert loaded.svm_server_folder("svm-test") == workspace.resolve() / "svm" / "servers" / "svm-test"
+    assert json.loads(project.manifest.read_text(encoding="utf-8"))["workspace"].startswith("C:\\")
+
+
 def test_mqtt_profiles_eku_constraints():
     broker = PROFILES["mqtt_broker"]
     client = PROFILES["mqtt_client"]
@@ -343,6 +526,21 @@ def test_mqtt_profiles_eku_constraints():
     assert "clientAuth" not in broker.extended_key_usage
     assert "clientAuth" in client.extended_key_usage
     assert "serverAuth" not in client.extended_key_usage
+
+
+def test_sixview_manager_profile_and_project_folder(tmp_path: Path):
+    profile = PROFILES["sixview_manager_https_server"]
+    assert profile.title == "SixView Manager HTTPS Server"
+    assert profile.leaf_key_type == "RSA"
+    assert profile.extended_key_usage == ("serverAuth",)
+    assert profile.key_usage == ("digitalSignature", "keyEncipherment")
+    assert profile.title in ISSUE_PROFILE_TITLES
+    assert "SixView Manager HTTPS Server package" in IMPORT_PACKAGE_TITLES
+
+    project = Project(str(tmp_path / "svm-structure"), "SVM Org")
+    project.save()
+    assert (project.path / "svm" / "servers").is_dir()
+    assert project.svm_server_folder("svm-test") == project.path / "svm" / "servers" / "svm-test"
 
 
 def test_mqtt_project_folders_created(tmp_path: Path):

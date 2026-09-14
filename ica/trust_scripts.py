@@ -93,7 +93,7 @@ def create_trust_bundle(destination: Path, root_certificate: Path, intermediate_
     }
     scripts["windows_install"].write_text(WINDOWS_INSTALL, encoding="utf-8-sig")
     scripts["windows_remove"].write_text(WINDOWS_REMOVE, encoding="utf-8-sig")
-    scripts["linux_install"].write_text(LINUX_INSTALL, encoding="utf-8")
-    scripts["linux_remove"].write_text(LINUX_REMOVE, encoding="utf-8")
+    scripts["linux_install"].write_text(LINUX_INSTALL, encoding="utf-8", newline="\n")
+    scripts["linux_remove"].write_text(LINUX_REMOVE, encoding="utf-8", newline="\n")
     scripts["linux_install"].chmod(0o755); scripts["linux_remove"].chmod(0o755)
     return scripts

@@ -38,6 +38,16 @@ PROFILES = {
         leaf_key_size_or_curve="RSA 2048",
         leaf_digest="SHA-256",
     ),
+    "sixview_manager_https_server": CertificateProfile(
+        key="sixview_manager_https_server",
+        title="SixView Manager HTTPS Server",
+        description="HTTPS identity and deployment package for SixView Manager servers.",
+        extended_key_usage=("serverAuth",),
+        key_usage=("digitalSignature", "keyEncipherment"),
+        leaf_key_type="RSA",
+        leaf_key_size_or_curve="RSA 2048",
+        leaf_digest="SHA-256",
+    ),
     # The UI exposes only FlexEdge in the first milestone. These definitions
     # establish the extension point for the next protocol workflows.
     "mqtt_broker": CertificateProfile(

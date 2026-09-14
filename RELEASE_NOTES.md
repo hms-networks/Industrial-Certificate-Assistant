@@ -1,3 +1,31 @@
+# Version 0.9.3
+
+- Added a native SixView Manager HTTPS Server profile with RSA 2048,
+  `serverAuth`, HTTPS key usage, and explicit DNS/IP SAN handling.
+- Added SVM-compatible `server.crt`, `server.key`, and `server.csr` artifacts,
+  plus leaf, chain, and traditional RSA key files.
+- Added SVM package validation for keys, CSR identity, SAN typing and
+  deduplication, certificate constraints, CA chains, PEM ordering, and root
+  exclusion.
+- Added an SVM-specific installation guide with TCP 18081 context and safe
+  discovery steps. The guide records the verified SVM 3.1.0 Podman paths
+  `/opt/svm/ssl/server.crt` and `/opt/svm/ssl/server.key`, while requiring
+  path and persistence verification for other releases and deployment models.
+- Documented the reviewed installer's systemd Quadlet persistence model and
+  individual read-only certificate/key mounts, avoiding changes that disappear
+  when the SVM container is recreated.
+- Added a guarded `deploy-svm-certificate.sh` package helper with preflight
+  validation, typed confirmation, persistent Quadlet mounts, root-only backup,
+  automatic failure rollback, and retrying post-restart certificate
+  verification with actionable failure diagnostics.
+- Extended IMPORT to load an existing ICA SVM package, auto-detect its standard
+  leaf/key/chain/CSR files, and create a new validated deployment package with
+  the deploy helper without reissuing or modifying the source identity.
+- Added safe SVM reissuance with key reuse or rotation and timestamped archive
+  preservation.
+- Fixed Windows-generated Linux trust installers to use Unix LF line endings,
+  allowing the packaged Bash scripts to run directly on Linux.
+
 # Version 0.9.2
 
 - Added an "Also export a PKCS#12 (.pfx) bundle" option to the Issue screen

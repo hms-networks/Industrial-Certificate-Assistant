@@ -1,8 +1,34 @@
 # Industrial Certificate Assistant
 
-Cross-platform guided PKI utility for FlexEdge HTTPS certificates and future
-industrial TLS profiles. Cryptographic operations are performed by OpenSSL;
+Cross-platform guided PKI utility for industrial HTTPS, MQTT, and OPC UA
+certificate profiles. Cryptographic operations are performed by OpenSSL;
 the desktop interface is built with Python and PySide6.
+
+## Version 0.9.3 milestone
+
+- Added the SixView Manager HTTPS Server profile with RSA, `serverAuth`,
+  explicit DNS/IP SANs, chain validation, and SVM-specific deployment
+  documentation.
+- SVM packages include `server.crt`, `server.key`, `server.csr`, leaf and CA
+  chain files, validated traditional-RSA key output, and a guarded
+  `deploy-svm-certificate.sh` helper.
+- ICA generates and validates the SVM deployment package; it does not install
+  certificates automatically. An SVM 3.1.0 Podman installation was verified
+  to use `/opt/svm/ssl/server.crt` and `/opt/svm/ssl/server.key`, but paths and
+  persistence must be reconfirmed for other versions and deployment models.
+  The reviewed installer uses a systemd Quadlet, so persistent deployment uses
+  individual read-only certificate and key bind mounts rather than modifying
+  the running container or masking its complete `/opt/svm/ssl` directory.
+  The observed SVM 3.1.0 key is unencrypted and its installer configures no TLS
+  key passphrase; unencrypted ICA output remains an explicit, warned choice.
+  The deployment helper validates the package, requires typed confirmation,
+  creates a root-only backup and rollback script, configures individual
+  read-only Quadlet mounts, restarts SVM, and verifies the certificate served
+  on TCP 18081.
+- The IMPORT workflow can load an existing ICA SVM device package or selected
+  leaf certificate, private key, CA chain, and optional CSR. It validates and
+  copies the existing identity into a new deployment package without issuing a
+  new certificate, changing its serial number, or modifying source files.
 
 ## Version 0.9.2 milestone
 
@@ -49,8 +75,12 @@ the desktop interface is built with Python and PySide6.
 
 - Added protocol-aware issuance workflows for:
   - Crimson 3.2 HTTPS server certificates
+  - Red Lion RAM HTTPS Server certificates
+  - SixView Manager HTTPS Server certificates
   - MQTT broker certificates
   - MQTT client/device certificates
+  - OPC UA server certificates
+  - OPC UA client certificates
 - Added MQTT broker packaging outputs with Mosquitto-ready TLS artifacts:
   - `mosquitto-tls.conf`
   - `install-mosquitto-tls.sh`
@@ -179,6 +209,8 @@ Industrial_Certs/
 ├── opcua/
 │   ├── servers/
 │   └── clients/
+├── svm/
+│   └── servers/
 ├── trust-installers/
 ├── backups/
 └── reports/
@@ -191,7 +223,7 @@ Passwords are never stored in `ica-project.json`.
 Copyright 2026 HMS Networks. Licensed under the Apache License 2.0. See
 `LICENSE` and `NOTICE`. OpenSSL redistribution information is documented in
 `THIRD_PARTY_NOTICES.md`.
-Industrial Certificate Assistant build files (version 0.9.2)
+Industrial Certificate Assistant build files (version 0.9.3)
 
 Place these files beside app.py and requirements.txt:
 
@@ -215,10 +247,10 @@ Application version label:
 
   Then use APP_VERSION wherever the GUI displays the release number.
 
-The Windows build embeds 0.9.2.0 in EXE file metadata and bundles VERSION.txt.
+The Windows build embeds 0.9.3.0 in EXE file metadata and bundles VERSION.txt.
 The runtime hook points bundled OpenSSL at its bundled openssl.cnf before app.py starts.
 
-Industrial Certificate Assistant build files (version 0.9.2)
+Industrial Certificate Assistant build files (version 0.9.3)
 
 Place these files beside app.py and requirements.txt:
 
@@ -242,6 +274,6 @@ Application version label:
 
   Then use APP_VERSION wherever the GUI displays the release number.
 
-The Windows build embeds 0.9.2.0 in EXE file metadata and bundles VERSION.txt.
+The Windows build embeds 0.9.3.0 in EXE file metadata and bundles VERSION.txt.
 The runtime hook points bundled OpenSSL at its bundled openssl.cnf before app.py starts.
 When a splash image is present, the builders install Pillow if it is not already available.
