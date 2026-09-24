@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
-FALLBACK_VERSION = "0.10.0"
+FALLBACK_VERSION = "0.10.1"
 
 
 def get_app_version() -> str:

@@ -1,3 +1,12 @@
+# Version 0.10.1
+
+- Fixed the Linux executable being unable to run the system OpenSSL on
+  distributions whose OpenSSL is newer than the build machine's (for example
+  Fedora with OpenSSL 3.5). The error named `OPENSSL_3.x.0' "not found" and
+  every certificate operation failed. The bundled libraries no longer leak into
+  the openssl process. Windows builds were not affected. This affected all
+  earlier Linux releases.
+
 # Version 0.10.0
 
 - Added HiveMQ as an MQTT Broker software option, with server-authenticated

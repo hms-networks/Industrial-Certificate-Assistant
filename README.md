@@ -4,6 +4,11 @@ Cross-platform guided PKI utility for industrial HTTPS, MQTT, and OPC UA
 certificate profiles. Cryptographic operations are performed by OpenSSL;
 the desktop interface is built with Python and PySide6.
 
+## Version 0.10.1
+
+- Fixed the Linux executable failing to run the system OpenSSL on
+  distributions with a newer OpenSSL than the build machine (e.g. Fedora).
+
 ## Version 0.10.0 milestone
 
 - Every certificate package now has `README.txt`, `deploy/`, `trust/`, and
@@ -263,7 +268,7 @@ Passwords are never stored in `ica-project.json`.
 Copyright 2026 HMS Networks. Licensed under the Apache License 2.0. See
 `LICENSE` and `NOTICE`. OpenSSL redistribution information is documented in
 `THIRD_PARTY_NOTICES.md`.
-Industrial Certificate Assistant build files (version 0.10.0)
+Industrial Certificate Assistant build files (version 0.10.1)
 
 Place these files beside app.py and requirements.txt:
 
@@ -287,10 +292,10 @@ Application version label:
 
   Then use APP_VERSION wherever the GUI displays the release number.
 
-The Windows build embeds 0.10.0.0 in EXE file metadata and bundles VERSION.txt.
+The Windows build embeds 0.10.1.0 in EXE file metadata and bundles VERSION.txt.
 The runtime hook points bundled OpenSSL at its bundled openssl.cnf before app.py starts.
 
-Industrial Certificate Assistant build files (version 0.10.0)
+Industrial Certificate Assistant build files (version 0.10.1)
 
 Place these files beside app.py and requirements.txt:
 
@@ -314,6 +319,6 @@ Application version label:
 
   Then use APP_VERSION wherever the GUI displays the release number.
 
-The Windows build embeds 0.10.0.0 in EXE file metadata and bundles VERSION.txt.
+The Windows build embeds 0.10.1.0 in EXE file metadata and bundles VERSION.txt.
 The runtime hook points bundled OpenSSL at its bundled openssl.cnf before app.py starts.
 When a splash image is present, the builders install Pillow if it is not already available.
