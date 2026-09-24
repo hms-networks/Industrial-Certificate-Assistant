@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -41,6 +42,28 @@ _PASSWORD_ERROR_SIGNATURES = ("bad decrypt", "bad password read", "maybe wrong p
 def _looks_like_wrong_password(output: str) -> bool:
     lowered = output.lower()
     return any(signature in lowered for signature in _PASSWORD_ERROR_SIGNATURES)
+
+
+def child_process_environment() -> dict[str, str] | None:
+    """Environment for external programs such as the system openssl.
+
+    A frozen PyInstaller app on Linux/macOS runs with LD_LIBRARY_PATH
+    pointing at its own bundle, which contains the libssl/libcrypto of the
+    build machine. A system openssl started with that path loads those
+    bundled libraries and fails ("version `OPENSSL_3.4.0' not found") when
+    they are older than its own. Restore the path the user started with,
+    which PyInstaller saves in <VAR>_ORIG. Returns None (inherit unchanged)
+    when not frozen, and on Windows, which ships its own openssl.exe."""
+    if not getattr(sys, "frozen", False) or os.name == "nt":
+        return None
+    env = dict(os.environ)
+    for variable in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):
+        original = env.pop(f"{variable}_ORIG", None)
+        if original is not None:
+            env[variable] = original
+        else:
+            env.pop(variable, None)
+    return env
 
 
 def is_encrypted_private_key(path: Path) -> bool:
@@ -169,7 +192,8 @@ class OpenSSLEngine:
             for password_path in password_paths:
                 display = display.replace(str(password_path), "<password-file>")
             self.logger(f"> {display}")
-            proc = subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=False)
+            proc = subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=False,
+                                  env=child_process_environment())
             output = (proc.stdout + proc.stderr).strip()
             if proc.returncode:
                 if passwords and _looks_like_wrong_password(output):
@@ -195,7 +219,7 @@ class OpenSSLEngine:
         Java ignores certificates in an OpenSSL-made truststore."""
         if not hasattr(self, "_jdktrust"):
             proc = subprocess.run([self.executable, "pkcs12", "-help"], text=True,
-                                  capture_output=True, check=False)
+                                  capture_output=True, check=False, env=child_process_environment())
             self._jdktrust = "-jdktrust" in proc.stdout + proc.stderr
         return self._jdktrust
 

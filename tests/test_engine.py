@@ -1199,3 +1199,37 @@ def test_adoption_refuses_when_both_locations_have_a_package(tmp_path: Path):
     else:
         raise AssertionError("Adoption must not merge two packages")
     assert project.legacy_device_folder("edge-02").is_dir()
+
+
+def test_frozen_app_starts_openssl_with_the_users_library_path(tmp_path: Path, monkeypatch):
+    """Regression: the Linux release bundles libssl/libcrypto from its build
+    machine and points LD_LIBRARY_PATH at them. The system openssl must not
+    inherit that path, or it loads the wrong libraries and exits."""
+    import os
+    import sys
+    import pytest
+    from ica.openssl_engine import child_process_environment
+    if os.name == "nt":
+        pytest.skip("Windows uses the bundled openssl.exe")
+    bundle = tmp_path / "_MEI_fake"
+    bundle.mkdir()
+    for name in ("libcrypto.so.3", "libssl.so.3"):
+        (bundle / name).write_bytes(b"not a library")  # stands in for an incompatible build
+    monkeypatch.setenv("LD_LIBRARY_PATH", str(bundle))
+    monkeypatch.delenv("LD_LIBRARY_PATH_ORIG", raising=False)
+
+    engine = OpenSSLEngine()
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+    try:
+        engine.version()
+    except OpenSSLError:
+        pass  # without the fix, openssl cannot load its libraries
+    else:
+        pytest.skip("this openssl does not load libssl/libcrypto from LD_LIBRARY_PATH")
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert "LD_LIBRARY_PATH" not in child_process_environment()
+    assert engine.version().startswith("OpenSSL")
+    monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", "/opt/user/lib")
+    assert child_process_environment()["LD_LIBRARY_PATH"] == "/opt/user/lib"
+    assert "LD_LIBRARY_PATH_ORIG" not in child_process_environment()
