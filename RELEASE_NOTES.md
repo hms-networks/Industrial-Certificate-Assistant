@@ -1,3 +1,62 @@
+# Unreleased
+
+- Added HiveMQ as an MQTT Broker software option, with server-authenticated
+  TLS or mutual TLS (`client-authentication-mode` REQUIRED).
+- HiveMQ packages include a PKCS#12 keystore (broker key, certificate, and
+  issuing CA) and, for mutual TLS, a Java-compatible PKCS#12 truststore (issuing
+  and root CA as `trustedCertEntry` items; requires OpenSSL 3.2+ `-jdktrust`).
+- `hivemq-config.xml` works as a complete container config or as a marked
+  listener block merged by `install-hivemq-tls.sh`. The keystore password is
+  never written to the package; HiveMQ reads it from
+  `HIVEMQ_TLS_KEYSTORE_PASSWORD`.
+- `install-hivemq-tls.sh` validates the keystores, requires typed
+  confirmation, backs up config.xml, preserves other listeners and file
+  ownership, refuses to overwrite a foreign listener on the same port, stores
+  the password in a root-only systemd EnvironmentFile, verifies the served
+  certificate after restart, and writes a rollback script. On failure it rolls
+  back automatically.
+- `verify-hivemq-tls.sh` checks the broker chain and SAN, confirms that a
+  client without a certificate is rejected, and confirms that a supplied
+  client certificate receives an MQTT CONNACK. It needs only OpenSSL.
+- Reorganized every certificate package into `deploy/` (copy to the target),
+  `trust/` (CA certificates, trust installers, verify scripts), and `records/`
+  (CSR, extensions, report), with a generated `README.txt` that lists every
+  file and what to do with it. It replaces `README-RAM-HTTPS.txt`,
+  `installation-guide.txt`, and `OPC-UA-INSTALLATION.txt`. Reissue and SVM
+  import still accept packages in the old flat layout.
+- Crimson and RAM packages now go to `crimson/servers/<name>` and
+  `ram/servers/<name>`, matching `svm/servers`, `mqtt/brokers|clients`, and
+  `opcua/servers|clients`. New projects no longer create `devices/`. For
+  existing projects, issuing a device that is still in `devices/<name>` moves
+  its package (same profile only) to the new folder and archives it there. The
+  Issue preview announces the move beforehand, and ICA refuses if both
+  locations already hold a package.
+- The Issue screen's "Issuance mode" (new issuance, reuse the existing private
+  key, or rotate the key) is available for every profile, not only RAM and
+  SVM, and now sits above the Issue button.
+- Each package records its profile, identity, serial number, and expiry in
+  `records/ica-package.json`. Older packages are recognized by their files.
+- Removed the duplicate CA copies: trust installers now sit next to
+  `root-ca.pem`/`intermediate-ca.pem` in `trust/` instead of a separate
+  `trust-installers/` folder with `*.cert.pem` copies in every package.
+- Mosquitto packaging now has a single implementation (`ica/mqtt_packaging.py`)
+  with a guarded installer: backup and rollback script, `include_dir` and port
+  conflict checks, refusal of encrypted broker keys (which Mosquitto cannot
+  unlock under systemd), `--test-config` validation on Mosquitto 2.1+, and a
+  check of the served certificate after restart. This replaces the previous
+  `mosquitto -t` check, which Mosquitto does not support.
+- Mosquitto now serves `broker-fullchain.pem`, so clients that hold only
+  `root-ca.pem` can verify the broker through the issuing CA.
+- Bash deployment scripts are always written with LF line endings, including
+  on Windows builds (SVM, HiveMQ, and Mosquitto scripts).
+- New projects no longer create unused `backups/` and `reports/` folders, and
+  the intermediate CA's `intermediate-ca.ext` lives in `intermediate-ca/`
+  instead of the project root.
+- MQTT client/device certificates can now be issued with only a Client ID,
+  with no DNS/IP SAN required.
+- Fixed: a certificate request rejected for missing SANs no longer leaves a
+  partial private key and CSR in the output folder.
+
 # Version 0.9.3
 
 - Added a native SixView Manager HTTPS Server profile with RSA 2048,

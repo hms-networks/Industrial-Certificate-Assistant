@@ -15,6 +15,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
+from . import hivemq_packaging
+from . import package_layout
+from .mqtt_packaging import create_mqtt_broker_bundle
 from .profiles import CertificateProfile, PROFILES
 from .svm_packaging import write_svm_deploy_script
 from .trust_scripts import create_trust_bundle
@@ -22,6 +25,14 @@ from .trust_scripts import create_trust_bundle
 
 class OpenSSLError(RuntimeError):
     pass
+
+
+CRIMSON_DEPLOY_NOTE = ("Load certificate.pem (or fullchain.pem where a chain is accepted) and "
+                       "private-key.pem into the device's HTTPS server settings.")
+SVM_DEPLOY_NOTE = ("Copy this folder to the SixView Manager host and run: "
+                   "sudo ./deploy-svm-certificate.sh (details below).")
+BROWSER_TRUST_NOTE = ("Run install-trust-windows.ps1 or install-trust-linux.sh on each computer "
+                      "that opens this device in a browser, or import root-ca.pem manually.")
 
 
 _PASSWORD_ERROR_SIGNATURES = ("bad decrypt", "bad password read", "maybe wrong password")
@@ -179,6 +190,15 @@ class OpenSSLEngine:
     def version(self) -> str:
         return self.run("version").strip()
 
+    def supports_java_truststore(self) -> bool:
+        """True when `pkcs12 -jdktrust` (OpenSSL 3.2+) is available. Without it,
+        Java ignores certificates in an OpenSSL-made truststore."""
+        if not hasattr(self, "_jdktrust"):
+            proc = subprocess.run([self.executable, "pkcs12", "-help"], text=True,
+                                  capture_output=True, check=False)
+            self._jdktrust = "-jdktrust" in proc.stdout + proc.stderr
+        return self._jdktrust
+
     def inspect_certificate(self, certificate: Path) -> str:
         # OpenSSL accepts repeated -ext arguments but prints only the last one
         # on some 3.0 builds. The complete text form is consistent across the
@@ -200,6 +220,16 @@ class OpenSSLEngine:
         output = self.run("x509", "-in", str(certificate), "-noout", "-enddate")
         value = output.split("=", 1)[-1].strip()
         return datetime.strptime(value, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+
+    def _certificate_subject(self, certificate: Path) -> Subject:
+        text = self.run("x509", "-in", str(certificate), "-noout", "-subject", "-nameopt", "RFC2253")
+        match = re.search(r"CN=((?:[^,\\]|\\.)+)", text)
+        return Subject(match.group(1) if match else "")
+
+    def certificate_sans(self, certificate: Path) -> list[str]:
+        text = self.run("x509", "-in", str(certificate), "-noout", "-ext", "subjectAltName")
+        return [value.replace("IP Address:", "IP:") for value in
+                re.findall(r"(?:DNS:|IP Address:|URI:)[^,\s]+", text)]
 
     def validate_server_certificate(self, certificate: Path, private_key: Path,
                                     ca_chain: Path, requested_sans: Iterable[str],
@@ -304,7 +334,7 @@ class OpenSSLEngine:
         if password: int_req_args += ["-passin", "file:{PASSFILE}"]
         int_req_args += ["-subj", intermediate_subject.openssl_subject(), "-out", str(int_csr)]
         self.run(*int_req_args, password=password if password else None)
-        ext = workspace / "intermediate-ca.ext"
+        ext = intermediate / "intermediate-ca.ext"
         ext.write_text("basicConstraints=critical,CA:TRUE,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n", encoding="utf-8")
         sign_args = ["x509", "-req", "-in", str(int_csr), "-CA", str(root_cert), "-CAkey", str(root_key)]
         if password: sign_args += ["-passin", "file:{PASSFILE}"]
@@ -346,7 +376,9 @@ class OpenSSLEngine:
                      days: int | None = None, digest: str = "SHA-256",
                      key_type: str = "RSA", key_size_or_curve: str = "RSA 3072",
                      application_uri: str = "", existing_key: Path | None = None,
-                     reissue: str | None = None) -> dict[str, Path]:
+                     reissue: str | None = None, organize: bool = True) -> dict[str, Path]:
+        """Issue a leaf certificate into `output`. Profile-specific issuers pass
+        organize=False, add their own files, and then organize the package."""
         int_key = workspace / "intermediate-ca" / "private" / "intermediate-ca.key.pem"
         int_cert = workspace / "intermediate-ca" / "certs" / "intermediate-ca.cert.pem"
         root_cert = workspace / "root-ca" / "certs" / "root-ca.cert.pem"
@@ -369,16 +401,24 @@ class OpenSSLEngine:
         if requested_days > remaining_days + 1:
             raise ValueError(f"Requested certificate validity exceeds the issuing CA lifetime. Maximum remaining validity is {remaining_days} days.")
         effective_days = min(requested_days, remaining_days)
+        # Validate SANs before generating any key material so a rejected
+        # request leaves no partial output behind.
+        san_values = normalize_sans(sans)
+        if application_uri:
+            san_values.append(f"URI:{normalize_application_uri(application_uri)}")
+        # Client-only identities (e.g. MQTT devices identified by Client ID
+        # and CN) are not addressed by hostname, so a SAN is optional there.
+        if not san_values and "serverAuth" in profile.extended_key_usage:
+            raise ValueError("At least one Subject Alternative Name is required.")
         key, csr = self.generate_csr(output, subject, sans, key_password,
                                      key_type, key_size_or_curve, digest, application_uri, existing_key)
         cert = output / "certificate.pem"
         ext = output / "certificate.ext"
-        san_values = normalize_sans(sans)
-        if application_uri:
-            san_values.append(f"URI:{normalize_application_uri(application_uri)}")
-        if not san_values:
-            raise ValueError("At least one Subject Alternative Name is required.")
-        ext.write_text("\n".join(("basicConstraints=critical,CA:FALSE", f"keyUsage=critical,{','.join(profile.key_usage)}", f"extendedKeyUsage={','.join(profile.extended_key_usage)}", f"subjectAltName={','.join(san_values)}", "subjectKeyIdentifier=hash", "authorityKeyIdentifier=keyid,issuer")) + "\n", encoding="utf-8")
+        extensions = ["basicConstraints=critical,CA:FALSE", f"keyUsage=critical,{','.join(profile.key_usage)}", f"extendedKeyUsage={','.join(profile.extended_key_usage)}"]
+        if san_values:
+            extensions.append(f"subjectAltName={','.join(san_values)}")
+        extensions += ["subjectKeyIdentifier=hash", "authorityKeyIdentifier=keyid,issuer"]
+        ext.write_text("\n".join(extensions) + "\n", encoding="utf-8")
         sign_args = ["x509", "-req", "-in", str(csr), "-CA", str(int_cert), "-CAkey", str(int_key)]
         if ca_password: sign_args += ["-passin", "file:{PASSFILE}"]
         sign_args += ["-CAcreateserial", "-days", str(effective_days), f"-{_digest_name(digest)}", "-extfile", str(ext), "-out", str(cert)]
@@ -393,36 +433,49 @@ class OpenSSLEngine:
         fullchain.write_bytes(cert.read_bytes() + int_cert.read_bytes())
         report = output / "certificate-report.txt"
         report.write_text(self.inspect_certificate(cert) + "\n\n" + self.verify_chain(cert, chain) + "\n", encoding="utf-8")
-        trust = create_trust_bundle(output / "trust-installers", root_cert, int_cert)
+        trust = create_trust_bundle(output / package_layout.TRUST, root_cert, int_cert)
         result = {"certificate": cert, "private_key": key, "ca_chain": chain, "fullchain": fullchain,
-                "intermediate": intermediate_out, "root": root_out, "csr": csr, "report": report, **trust}
+                "intermediate": intermediate_out, "root": root_out, "csr": csr, "extensions": ext,
+                "report": report, **trust}
         if archive:
             result["archive"] = archive
+        if organize:
+            self._organize(output, result, profile.title, subject, san_values, profile=profile.key,
+                           deploy_note=CRIMSON_DEPLOY_NOTE, trust_note=BROWSER_TRUST_NOTE)
         return result
+
+    def _organize(self, output: Path, result: dict[str, Path], title: str, subject: Subject,
+                  sans: Iterable[str], *, profile: str, deploy_note: str, trust_note: str,
+                  details: str = "", deploy_copies: tuple[str, ...] = (),
+                  variant: str = "", source: str = "issued") -> dict[str, Path]:
+        sans = list(sans)
+        not_after = self.certificate_not_after(result["certificate"])
+        serial = self.run("x509", "-in", str(result["certificate"]), "-noout", "-serial").split("=", 1)[-1].strip()
+        manifest = {"profile": profile, **({"variant": variant} if variant else {}),
+                    "source": source, "common_name": subject.common_name, "sans": sans,
+                    "serial": serial, "not_after": not_after.isoformat(),
+                    "packaged_utc": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        summary = [f"Common Name: {subject.common_name}"]
+        san_list = [value.replace("DNS:", "").replace("IP:", "").replace("URI:", "") for value in sans]
+        summary.append(f"Names (SAN): {', '.join(san_list) if san_list else '(none)'}")
+        summary.append(f"Valid until: {not_after.strftime('%Y-%m-%d')}")
+        return package_layout.organize_package(
+            output, result, title=f"{title} certificate package", summary=summary,
+            deploy_note=deploy_note, trust_note=trust_note, details=details,
+            deploy_copies=deploy_copies, manifest=manifest)
 
     def issue_ram_https(self, workspace: Path, output: Path, subject: Subject,
                         sans: Iterable[str], ca_password: str, key_password: str,
                         days: int | None = None, reissue: str = "new") -> dict[str, Path]:
         profile = PROFILES["ram_https"]
-        existing_key = output / "private-key.pem"
-        archive_path: Path | None = None
-        if output.exists() and any(path for path in output.iterdir() if path.name != "archive"):
-            if reissue not in {"existing", "new"}:
-                raise ValueError("RAM reissue mode must be 'existing' or 'new'.")
-            archive_path = output / "archive" / datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
-            archive_path.mkdir(parents=True, exist_ok=False)
-            for path in list(output.iterdir()):
-                if path.name == "archive" or (reissue == "existing" and path == existing_key):
-                    continue
-                shutil.move(str(path), archive_path / path.name)
-        elif reissue != "new":
-            raise ValueError("Cannot reuse a private key because no existing RAM issuance was found.")
+        sans = list(sans)
+        existing_key, archive_path = self._prepare_reissue(output, reissue)
         result = self.issue_server(
             workspace, output, subject, sans, ca_password, key_password,
             profile=profile, days=days, digest=profile.leaf_digest or "SHA-256",
             key_type=profile.leaf_key_type or "RSA",
             key_size_or_curve=profile.leaf_key_size_or_curve or "RSA 2048",
-            existing_key=existing_key if reissue == "existing" else None,
+            existing_key=existing_key, organize=False,
         )
         rsa_key = output / "private-key-rsa.pem"
         self.run("rsa", "-in", str(result["private_key"]), "-out", str(rsa_key), "-traditional",
@@ -459,25 +512,21 @@ class OpenSSLEngine:
             + self.verify_chain(result["certificate"], result["ca_chain"]) + "\n",
             encoding="utf-8",
         )
-        readme = output / "README-RAM-HTTPS.txt"
-        readme.write_text(
-            "RED LION RAM HTTPS CERTIFICATE\n\n"
-            f"Device: {subject.common_name}\nCertificate Common Name: {subject.common_name}\n"
-            f"Certificate identities: {', '.join(normalize_sans(sans))}\n\n"
-            "INSTALL CLIENT TRUST FIRST\n\nInstall root-ca.pem into Trusted Root Certification Authorities.\n"
-            "Install intermediate-ca.pem into Intermediate Certification Authorities if required.\n"
-            "Do NOT install the RAM private key on administrative computers.\n\n"
-            "RAM INSTALLATION\n\n1. Log into the RAM web interface.\n2. Navigate to Admin -> Certificates.\n"
-            "3. Select Add Certificate.\n4. Select Certificate Type: HTTPS.\n5. Upload ram-https.pem.\n\n"
-            "The deployment PEM contains the server certificate, intermediate CA, and RSA private key.\n"
-            "The root CA is intentionally excluded. This file contains the RAM HTTPS private key; protect it as sensitive device credential material.\n",
-            encoding="utf-8",
-        )
-        result.update(private_key_rsa=rsa_key, ram_https=deployment, lighttpd_gau=lighttpd,
-                      readme_ram_https=readme, report=report)
+        result.update(private_key_rsa=rsa_key, ram_https=deployment, lighttpd_gau=lighttpd, report=report)
         if archive_path:
             result["archive"] = archive_path
-        return result
+        return self._organize(
+            output, result, profile.title, subject, normalize_sans(sans), profile=profile.key,
+            deploy_note="Upload deploy/ram-https.pem in the RAM web interface (steps below).",
+            trust_note=BROWSER_TRUST_NOTE,
+            details=(
+                "RAM INSTALLATION\n\n"
+                "1. Install client trust first: run trust/install-trust-windows.ps1 (or the Linux\n"
+                "   script) on each administrative computer. Never install the RAM private key there.\n"
+                "2. Log into the RAM web interface.\n3. Navigate to Admin -> Certificates.\n"
+                "4. Select Add Certificate.\n5. Select Certificate Type: HTTPS.\n6. Upload deploy/ram-https.pem.\n\n"
+                "ram-https.pem contains the server certificate, intermediate CA, and RSA private key.\n"
+                "The root CA is intentionally excluded. Protect it as sensitive device credential material.\n"))
 
     def issue_sixview_manager_https(self, workspace: Path, output: Path, subject: Subject,
                                      sans: Iterable[str], ca_password: str, key_password: str,
@@ -492,7 +541,7 @@ class OpenSSLEngine:
             profile=profile, days=days, digest=profile.leaf_digest or "SHA-256",
             key_type=profile.leaf_key_type or "RSA",
             key_size_or_curve=profile.leaf_key_size_or_curve or "RSA 2048",
-            existing_key=existing_key,
+            existing_key=existing_key, organize=False,
         )
 
         csr = output / "server.csr"
@@ -526,9 +575,8 @@ class OpenSSLEngine:
             + self.verify_chain(result["certificate"], result["ca_chain"]) + "\n",
             encoding="utf-8",
         )
-        guide = output / "installation-guide.txt"
-        guide.write_text(
-            "SIXVIEW MANAGER HTTPS SERVER CERTIFICATE\n\n"
+        guide = (
+            "SIXVIEW MANAGER DETAILS\n\n"
             "Generated files\n\n"
             "server.crt\n    HTTPS server chain intended for SixView Manager: leaf certificate followed by the issuing intermediate CA.\n"
             "server.key\n    Matching RSA private key. It follows the private-key encryption choice made during issuance.\n"
@@ -560,8 +608,8 @@ class OpenSSLEngine:
             "    Volume=<HOST-SVM-SSL>/server.key:/opt/svm/ssl/server.key:ro,Z\n\n"
             "Replace <HOST-SVM-SSL> with the absolute host path. Do not mount an empty directory over /opt/svm/ssl because that would hide other SSL assets supplied by the image. "
             "After changing a Quadlet, reload systemd and restart the SVM service only during an approved maintenance window, then verify the presented certificate on TCP 18081.\n\n"
-            "ICA includes deploy-svm-certificate.sh to perform this guarded workflow. Review it and the detected paths first, then run it from the generated package during an approved maintenance window:\n"
-            "    sudo ./deploy-svm-certificate.sh\n\n"
+            "ICA includes deploy-svm-certificate.sh to perform this guarded workflow. Review it and the detected paths first, then run it from the deploy/ folder on the SVM host during an approved maintenance window:\n"
+            "    cd deploy && sudo ./deploy-svm-certificate.sh\n\n"
             "The script requires typed DEPLOY confirmation, validates the certificate and key, creates a root-only backup and rollback script, installs individual persistent mounts, restarts SVM, and verifies the certificate presented on TCP 18081.\n\n"
             "Back up the existing SVM certificate and private key before replacement. Do not overwrite any file until its active path, service ownership, permissions, and persistence mechanism are confirmed. "
             "The installed private key must not be group/world-readable or executable. Set ownership to the SVM service account and use mode 0600, or mode 0640 only when a dedicated service group requires access.\n\n"
@@ -571,16 +619,16 @@ class OpenSSLEngine:
             "For a Podman deployment:\n"
             "sudo podman exec svm_container ls -la /opt/svm/ssl\n"
             "openssl s_client -connect 127.0.0.1:18081 -servername <SVM-DNS-NAME> -showcerts </dev/null\n\n"
-            "Replace <SVM-DNS-NAME> with the actual DNS name; do not type the angle brackets literally.\n",
-            encoding="utf-8",
+            "Replace <SVM-DNS-NAME> with the actual DNS name; do not type the angle brackets literally.\n"
         )
         deploy_script = write_svm_deploy_script(output)
         result.update(private_key_rsa=rsa_key, server_certificate=server_certificate,
-                      server_key=server_key, report=report, installation_guide=guide,
-                      deploy_script=deploy_script)
+                      server_key=server_key, report=report, deploy_script=deploy_script)
         if archive:
             result["archive"] = archive
-        return result
+        return self._organize(output, result, profile.title, subject, requested_sans, profile=profile.key,
+                              deploy_note=SVM_DEPLOY_NOTE, trust_note=BROWSER_TRUST_NOTE,
+                              details=guide)
 
     def package_existing_sixview_manager_https(
             self, certificate: Path, private_key: Path, ca_chain: Path,
@@ -592,7 +640,7 @@ class OpenSSLEngine:
             path: path.read_bytes() for path in (certificate, private_key, ca_chain)
         }
         result = self.package_existing(
-            certificate, private_key, ca_chain, output, key_password)
+            certificate, private_key, ca_chain, output, key_password, organize=False)
         certificate_text = self.inspect_certificate(result["certificate"])
         if "Public Key Algorithm: rsaEncryption" not in certificate_text:
             raise OpenSSLError("The SixView Manager certificate must use an RSA public key.")
@@ -649,9 +697,8 @@ class OpenSSLEngine:
             + self.verify_chain(result["certificate"], result["ca_chain"]) + "\n",
             encoding="utf-8",
         )
-        guide = output / "installation-guide.txt"
-        guide.write_text(
-            "SIXVIEW MANAGER HTTPS SERVER CERTIFICATE\n\n"
+        guide = (
+            "SIXVIEW MANAGER DETAILS\n\n"
             "This deployment package was created from an existing certificate and private key. "
             "ICA did not issue, renew, or modify the source identity.\n\n"
             "Use server.crt and server.key with deploy-svm-certificate.sh. server.crt contains "
@@ -659,22 +706,25 @@ class OpenSSLEngine:
             + ("server.csr preserves the supplied matching certificate request.\n" if server_csr else
                "No CSR was supplied; certificate/key/chain validation is unaffected.\n")
             + "\nReview the deployment script before running it. On the verified SVM 3.1.0 Podman "
-            "installation, run sudo ./deploy-svm-certificate.sh during an approved maintenance window. "
+            "installation, run cd deploy && sudo ./deploy-svm-certificate.sh during an approved maintenance window. "
             "The script validates the package, requires typed confirmation, backs up the current "
             "Quadlet and identity, installs persistent read-only mounts, restarts SVM, verifies TCP "
-            "18081, and creates a rollback script.\n",
-            encoding="utf-8",
+            "18081, and creates a rollback script.\n"
         )
         deploy_script = write_svm_deploy_script(output)
         for source, original in source_hashes.items():
             if source.read_bytes() != original:
                 raise OpenSSLError(f"Source file changed while packaging: {source}")
         result.update(private_key_rsa=rsa_key, server_certificate=server_certificate,
-                      server_key=server_key, report=report,
-                      installation_guide=guide, deploy_script=deploy_script)
+                      server_key=server_key, report=report, deploy_script=deploy_script)
         if server_csr:
             result["csr"] = server_csr
-        return result
+        return self._organize(output, result, "SixView Manager HTTPS Server (imported)",
+                              self._certificate_subject(result["certificate"]),
+                              self.certificate_sans(result["certificate"]),
+                              profile="sixview_manager_https_server", source="imported",
+                              deploy_note=SVM_DEPLOY_NOTE, trust_note=BROWSER_TRUST_NOTE,
+                              details=guide)
 
     def _validate_sixview_manager_package(self, result: dict[str, Path], server_certificate: Path,
                                           server_key: Path, csr: Path, requested_sans: list[str],
@@ -786,77 +836,120 @@ class OpenSSLEngine:
             if reissue == "existing":
                 raise ValueError("Cannot reuse a private key because no existing issuance was found.")
             return None, None
+        # The key is in deploy/ for current packages and at the top level for
+        # packages created before the deploy/trust/records layout.
+        old_key = next((path for path in (output / package_layout.DEPLOY / key_name, output / key_name)
+                        if path.is_file()), None)
+        if reissue == "existing" and old_key is None:
+            raise FileNotFoundError(f"Existing private key not found: {output / package_layout.DEPLOY / key_name}")
         archive = output / "archive" / datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S_%f")
         archive.mkdir(parents=True, exist_ok=False)
-        old_key = output / key_name
-        if reissue == "existing" and not old_key.exists():
-            raise FileNotFoundError(f"Existing private key not found: {old_key}")
         for path in list(output.iterdir()):
             if path.name != "archive":
                 shutil.move(str(path), archive / path.name)
-        existing_key = archive / key_name if reissue == "existing" else None
+        existing_key = archive / old_key.relative_to(output) if reissue == "existing" and old_key else None
         return existing_key, archive
 
     def issue_mqtt_broker(self, workspace: Path, output: Path, subject: Subject,
                           sans: Iterable[str], ca_password: str, key_password: str,
                           mutual_tls: bool = False, reissue: str = "new", **kwargs) -> dict[str, Path]:
+        sans = list(sans)
         existing_key, archive = self._prepare_reissue(output, reissue, "broker-private-key.pem")
         result = self.issue_server(workspace, output, subject, sans, ca_password, key_password,
-                                   profile=PROFILES["mqtt_broker"], existing_key=existing_key, **kwargs)
+                                   profile=PROFILES["mqtt_broker"], existing_key=existing_key,
+                                   organize=False, **kwargs)
         self._rename_profile_files(result, output, "broker")
-        conf = output / "mosquitto-tls.conf"
-        conf.write_text(
-            "listener 8883\nallow_anonymous false\n"
-            "cafile /etc/mosquitto/certs/ca-chain.pem\n"
-            "certfile /etc/mosquitto/certs/broker-certificate.pem\n"
-            "keyfile /etc/mosquitto/certs/broker-private-key.pem\n"
-            f"require_certificate {'true' if mutual_tls else 'false'}\n"
-            f"use_identity_as_username {'true' if mutual_tls else 'false'}\n",
-            encoding="utf-8",
-        )
-        install = output / "install-mosquitto-tls.sh"
-        install.write_text("""#!/usr/bin/env bash
-set -euo pipefail
-echo "Back up /etc/mosquitto before installing."
-sudo install -d -m 0750 /etc/mosquitto/certs
-sudo install -m 0644 broker-certificate.pem ca-chain.pem /etc/mosquitto/certs/
-sudo install -m 0640 broker-private-key.pem /etc/mosquitto/certs/
-sudo install -m 0644 mosquitto-tls.conf /etc/mosquitto/conf.d/
-sudo mosquitto -c /etc/mosquitto/mosquitto.conf -t
-echo "Restart Mosquitto only after validation; restore the backup on failure."
-""", encoding="utf-8")
-        remove = output / "remove-mosquitto-tls.sh"
-        remove.write_text("""#!/usr/bin/env bash
-set -euo pipefail
-read -r -p "Type REMOVE to continue: " answer
-[[ "$answer" == "REMOVE" ]] || exit 1
-sudo rm -f /etc/mosquitto/conf.d/mosquitto-tls.conf
-echo "Restore the previous configuration from backup if required."
-""", encoding="utf-8")
-        verify = output / "verify-mqtt-tls.sh"
-        verify.write_text("""#!/usr/bin/env bash
-set -euo pipefail
-openssl s_client -connect "${1:-localhost}:8883" -CAfile ca-chain.pem </dev/null
-echo "Then verify publish/subscribe with mosquitto_pub and mosquitto_sub."
-""", encoding="utf-8")
-        for path in (install, remove, verify):
-            path.chmod(0o755)
-        result.update(mosquitto_conf=conf, mosquitto_install=install,
-                      mosquitto_remove=remove, mosquitto_verify=verify)
+        result.update(create_mqtt_broker_bundle(output, mutual_tls))
         if archive:
             result["archive"] = archive
-        return result
+        return self._organize(
+            output, result, "Mosquitto MQTT broker", subject, normalize_sans(sans),
+            profile="mqtt_broker", variant="mosquitto",
+            deploy_note="Copy this folder to the Mosquitto host and run: sudo ./install-mosquitto-tls.sh",
+            trust_note="Give root-ca.pem to every MQTT client so it can verify the broker. "
+                       "verify-mqtt-tls.sh tests the broker from a client machine.",
+            deploy_copies=("ca-chain.pem",),
+            details=("MOSQUITTO DETAILS\n\n"
+                     f"Mutual TLS: {'enabled (require_certificate true; the client certificate CN is the MQTT username)' if mutual_tls else 'disabled'}\n"
+                     "deploy/ca-chain.pem is the broker's own copy of the CA chain; Mosquitto uses it as cafile\n"
+                     "to verify client certificates.\n"
+                     + ("" if mutual_tls else
+                        "allow_anonymous is false, so without mutual TLS clients need an MQTT username and\n"
+                        "password: configure password_file in mosquitto.conf.\n")
+                     + "The broker private key must be unencrypted: Mosquitto cannot prompt for a\n"
+                     "passphrase when started by systemd. The installer refuses an encrypted key.\n"))
+
+    def issue_hivemq_broker(self, workspace: Path, output: Path, subject: Subject,
+                            sans: Iterable[str], ca_password: str, key_password: str,
+                            keystore_password: str, mutual_tls: bool = True,
+                            reissue: str = "new", **kwargs) -> dict[str, Path]:
+        """Issue an MQTT broker identity packaged for HiveMQ.
+
+        HiveMQ is Java-based and reads PKCS#12 stores, not PEM. The keystore
+        holds the broker key, certificate, and issuing CA. With mutual TLS, the
+        truststore holds the issuing and root CA as Java trusted-certificate
+        entries so HiveMQ can verify client certificates issued by this PKI."""
+        if len(keystore_password) < 6:
+            raise ValueError("The HiveMQ keystore password must be at least 6 characters (Java keystore requirement).")
+        if any(ch in keystore_password for ch in '"\\\r\n'):
+            raise ValueError("The HiveMQ keystore password cannot contain double quotes, backslashes, or line breaks.")
+        if mutual_tls and not self.supports_java_truststore():
+            raise OpenSSLError(
+                f"This OpenSSL build ({self.version()}) cannot create Java truststores (-jdktrust). "
+                "OpenSSL 3.2 or later is required for the HiveMQ mutual TLS package.")
+        existing_key, archive = self._prepare_reissue(output, reissue, "broker-private-key.pem")
+        sans = list(sans)
+        result = self.issue_server(workspace, output, subject, sans, ca_password, key_password,
+                                   profile=PROFILES["mqtt_broker"], existing_key=existing_key,
+                                   organize=False, **kwargs)
+        self._rename_profile_files(result, output, "broker")
+        keystore = self.export_pkcs12(
+            result["certificate"], result["private_key"], result["intermediate"],
+            output / hivemq_packaging.KEYSTORE_NAME, pfx_password=keystore_password,
+            key_password=key_password, friendly_name="hivemq-broker")
+        result["hivemq_keystore"] = keystore
+        if mutual_tls:
+            truststore = output / hivemq_packaging.TRUSTSTORE_NAME
+            self._run("pkcs12", "-export", "-nokeys", "-in", str(result["ca_chain"]),
+                      "-jdktrust", "anyExtendedKeyUsage", "-out", str(truststore),
+                      "-passout", "file:{PASSOUT}", passwords={"{PASSOUT}": keystore_password})
+            result["hivemq_truststore"] = truststore
+        result.update(hivemq_packaging.write_hivemq_bundle(output, mutual_tls))
+        report = result["report"]
+        report.write_text(
+            "Profile: HiveMQ MQTT broker\n"
+            f"Client authentication: {'REQUIRED (mutual TLS)' if mutual_tls else 'NONE'}\n"
+            f"Keystore: {keystore.name} (PKCS#12, alias hivemq-broker)\n"
+            + (f"Truststore: {hivemq_packaging.TRUSTSTORE_NAME} (PKCS#12, issuing + root CA)\n" if mutual_tls else "")
+            + "\n" + report.read_text(encoding="utf-8"), encoding="utf-8")
+        if archive:
+            result["archive"] = archive
+        return self._organize(
+            output, result, "HiveMQ MQTT broker", subject, normalize_sans(sans),
+            profile="mqtt_broker", variant="hivemq",
+            deploy_note="Copy this folder to the HiveMQ host and run: sudo ./install-hivemq-tls.sh "
+                        "(containers: see below).",
+            trust_note="Give root-ca.pem to every MQTT client so it can verify the broker. "
+                       "verify-hivemq-tls.sh tests the broker from a client machine.",
+            details=hivemq_packaging.readme_details(mutual_tls))
 
     def issue_mqtt_client(self, workspace: Path, output: Path, subject: Subject,
                           sans: Iterable[str], ca_password: str, key_password: str,
                           reissue: str = "new", **kwargs) -> dict[str, Path]:
         existing_key, archive = self._prepare_reissue(output, reissue, "client-private-key.pem")
+        sans = list(sans)
         result = self.issue_server(workspace, output, subject, sans, ca_password, key_password,
-                                   profile=PROFILES["mqtt_client"], existing_key=existing_key, **kwargs)
+                                   profile=PROFILES["mqtt_client"], existing_key=existing_key,
+                                   organize=False, **kwargs)
         result = self._rename_profile_files(result, output, "client")
         if archive:
             result["archive"] = archive
-        return result
+        return self._organize(
+            output, result, "MQTT client/device", subject, normalize_sans(sans), profile="mqtt_client",
+            deploy_note="Load these into the device's MQTT client settings: client-certificate.pem, "
+                        "client-private-key.pem, and root-ca.pem (to verify the broker).",
+            trust_note="CA certificates of this PKI, for reference. The device needs only deploy/root-ca.pem.",
+            deploy_copies=("root-ca.pem",))
 
     def generate_intermediate_crl(self, workspace: Path, ca_password: str,
                                   days: int = 365) -> dict[str, Path]:
@@ -904,9 +997,10 @@ echo "Then verify publish/subscribe with mosquitto_pub and mosquitto_sub."
                      reissue: str = "new", **kwargs) -> dict[str, Path]:
         uri = normalize_application_uri(application_uri)
         existing_key, archive = self._prepare_reissue(output, reissue, f"{prefix}-private-key.pem")
+        sans = list(sans)
         result = self.issue_server(workspace, output, subject, sans, ca_password, key_password,
                                    profile=profile, application_uri=uri,
-                                   existing_key=existing_key, **kwargs)
+                                   existing_key=existing_key, organize=False, **kwargs)
         self._rename_profile_files(result, output, prefix)
         crls = self.generate_intermediate_crl(workspace, ca_password)
         trust = output / "opcua-trust"
@@ -925,17 +1019,15 @@ echo "Then verify publish/subscribe with mosquitto_pub and mosquitto_sub."
         shutil.copy2(crls["crl_pem"], crl_pem)
         leaf_der = output / f"{prefix}-certificate.der"
         self.run("x509", "-in", str(result["certificate"]), "-outform", "DER", "-out", str(leaf_der))
-        guide = output / "OPC-UA-INSTALLATION.txt"
-        guide.write_text(
-            f"OPC UA {role_label} certificate package\n\n"
+        guide = (
+            f"OPC UA {role_label.upper()} DETAILS\n\n"
             f"Application URI: {uri}\n"
-            f"1. Install {prefix}-certificate.pem and {prefix}-private-key.pem as the {role_label} application identity.\n"
-            "2. Install the issuing chain and CRL in the OPC UA trust stores, not only the HTTPS identity store.\n"
+            f"1. Install deploy/{prefix}-certificate.pem (or .der) and deploy/{prefix}-private-key.pem as the {role_label} application identity.\n"
+            "2. Install deploy/opcua-trust/ (issuing chain and CRL) in the application's OPC UA trust stores, not only the HTTPS identity store.\n"
             "3. Trust the counterpart OPC UA application certificate on each endpoint it connects to.\n"
-            "4. On UAExpert/PI, place trusted and issuer files according to the supplied opcua-trust tree.\n"
+            "4. On UAExpert/PI, place trusted and issuer files according to the opcua-trust tree.\n"
             "5. Confirm the endpoint ApplicationUri exactly matches the URI SAN above.\n"
-            "6. Test Basic256Sha256 and inspect the precise Bad_* status before production rollout.\n",
-            encoding="utf-8",
+            "6. Test Basic256Sha256 and inspect the precise Bad_* status before production rollout.\n"
         )
         report = result["report"]
         report.write_text(
@@ -943,11 +1035,17 @@ echo "Then verify publish/subscribe with mosquitto_pub and mosquitto_sub."
             "CRL (PEM): " + str(crl_pem) + "\nCRL (DER): " + str(crl_der) + "\n\n"
             + report.read_text(encoding="utf-8"), encoding="utf-8")
         result.update(crl_pem=crl_pem, crl_der=crl_der,
-                      root_der=root_der, intermediate_der=int_der,
-                      certificate_der=leaf_der, installation_guide=guide)
+                      root_der=root_der, intermediate_der=int_der, certificate_der=leaf_der)
         if archive:
             result["archive"] = archive
-        return result
+        return self._organize(
+            output, result, f"OPC UA {role_label}", subject, normalize_sans(sans) + [f"URI:{uri}"],
+            profile=profile.key,
+            deploy_note=f"Install on the OPC UA {role_label}: its certificate and key, plus opcua-trust/ "
+                        "as the application's trust store (steps below).",
+            trust_note="CA certificates and OS trust installers for other systems that must trust "
+                       "this PKI (for example peers without an OPC UA trust list).",
+            details=guide)
 
     def issue_opcua_server(self, workspace: Path, output: Path, subject: Subject,
                            sans: Iterable[str], application_uri: str,
@@ -966,7 +1064,7 @@ echo "Then verify publish/subscribe with mosquitto_pub and mosquitto_sub."
                                  "client", "client", reissue=reissue, **kwargs)
 
     def package_existing(self, certificate: Path, private_key: Path, ca_chain: Path,
-                         output: Path, key_password: str = "") -> dict[str, Path]:
+                         output: Path, key_password: str = "", organize: bool = True) -> dict[str, Path]:
         if is_encrypted_private_key(private_key) and not key_password:
             raise ValueError("The selected private key is encrypted; enter its password to continue.")
         if not self.verify_key_matches(certificate, private_key, key_password):
@@ -990,18 +1088,30 @@ echo "Then verify publish/subscribe with mosquitto_pub and mosquitto_sub."
         intermediate = None
         if intermediates:
             intermediate = output / "intermediate-ca.pem"; intermediate.write_bytes(b"".join(intermediates))
-        trust = create_trust_bundle(output / "trust-installers", root, intermediate)
-        return {"certificate": cert_out, "private_key": key_out, "ca_chain": chain_out,
-                "fullchain": fullchain, "root": root, "report": report, **trust}
+        trust = create_trust_bundle(output / package_layout.TRUST, root, intermediate)
+        result = {"certificate": cert_out, "private_key": key_out, "ca_chain": chain_out,
+                  "fullchain": fullchain, "root": root, "report": report, **trust}
+        if intermediate:
+            result["intermediate"] = intermediate
+        if organize:
+            self._organize(output, result, "Existing HTTPS identity",
+                           self._certificate_subject(cert_out), self.certificate_sans(cert_out),
+                           profile="flexedge_https", source="imported",
+                           deploy_note=CRIMSON_DEPLOY_NOTE, trust_note=BROWSER_TRUST_NOTE,
+                           details="This package was built from an existing certificate and key; "
+                                   "ICA did not issue or modify the identity.")
+        return result
 
     def export_pkcs12(self, certificate: Path, private_key: Path, ca_chain: Path, output: Path,
-                      pfx_password: str, key_password: str = "") -> Path:
+                      pfx_password: str, key_password: str = "", friendly_name: str = "") -> Path:
         """Bundle `certificate` + `private_key` + `ca_chain` into a password-protected
-        .pfx, for applications (Kepware, IIS, ...) that import PKCS#12 instead of
-        separate PEM files. `key_password` decrypts `private_key` if it is itself
+        .pfx, for applications (Kepware, IIS, HiveMQ, ...) that import PKCS#12 instead
+        of separate PEM files. `key_password` decrypts `private_key` if it is itself
         encrypted; `pfx_password` protects the resulting .pfx and may be different."""
         args = ["pkcs12", "-export", "-in", str(certificate), "-inkey", str(private_key),
                 "-certfile", str(ca_chain), "-out", str(output), "-passout", "file:{PASSOUT}"]
+        if friendly_name:
+            args += ["-name", friendly_name]
         passwords = {"{PASSOUT}": pfx_password}
         if is_encrypted_private_key(private_key):
             args += ["-passin", "file:{PASSIN}"]

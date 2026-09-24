@@ -3,6 +3,7 @@
 
 import json
 import re
+import shutil
 import subprocess
 from inspect import signature
 from pathlib import Path
@@ -62,7 +63,7 @@ def test_ecdsa_pki_profile_settings(tmp_path: Path):
 
     result = engine.issue_server(
         workspace,
-        project.device_folder("edge-a"),
+        project.crimson_server_folder("edge-a"),
         Subject("edge-a.local", "Edge Org"),
         ["edge-a.local", "192.168.10.15"],
         "",
@@ -86,7 +87,7 @@ def test_full_pki(tmp_path: Path):
     project = Project(str(workspace), "Test", "Test PKI", "local")
     project.save()
     engine.create_pki(workspace, Subject("Test Root CA", "Test"), Subject("Test Issuing CA", "Test"), password)
-    result = engine.issue_server(workspace, project.device_folder("edge"), Subject("edge.local", "Test"), ["edge.local", "192.168.1.10"], password, "device-key-password")
+    result = engine.issue_server(workspace, project.crimson_server_folder("edge"), Subject("edge.local", "Test"), ["edge.local", "192.168.1.10"], password, "device-key-password")
     assert engine.verify_key_matches(result["certificate"], result["private_key"], "device-key-password")
     assert "edge.local" in engine.inspect_certificate(result["certificate"])
     assert "OK" in engine.verify_chain(result["certificate"], result["ca_chain"])
@@ -113,7 +114,7 @@ def test_issue_ram_https_package(tmp_path: Path):
 
     result = engine.issue_ram_https(
         workspace,
-        project.device_folder("RAMTEST01"),
+        project.ram_server_folder("RAMTEST01"),
         Subject("RAMTEST01", "GregNet"),
         ["192.168.1.10", "ramtest01.example.local", "2001:db8::10"],
         "",
@@ -127,8 +128,9 @@ def test_issue_ram_https_package(tmp_path: Path):
     assert deployment.count(b"BEGIN CERTIFICATE") == 2
     assert deployment.count(b"BEGIN RSA PRIVATE KEY") == 1
     assert deployment.find(b"BEGIN CERTIFICATE") < deployment.find(b"BEGIN RSA PRIVATE KEY")
-    assert project.device_folder("RAMTEST01").joinpath("root-ca.pem").read_bytes() not in deployment
-    assert result["readme_ram_https"].exists()
+    assert project.ram_server_folder("RAMTEST01").joinpath("trust", "root-ca.pem").read_bytes() not in deployment
+    assert result["ram_https"] == project.ram_server_folder("RAMTEST01") / "deploy" / "ram-https.pem"
+    assert "Upload deploy/ram-https.pem" in result["readme"].read_text(encoding="utf-8")
 
 
 def test_issue_sixview_manager_https_package(tmp_path: Path):
@@ -150,12 +152,11 @@ def test_issue_sixview_manager_https_package(tmp_path: Path):
         "", "svm-key-password",
     )
 
-    required = {
-        "certificate.pem", "private-key.pem", "private-key-rsa.pem", "ca-chain.pem",
-        "fullchain.pem", "server.crt", "server.key", "server.csr",
-        "certificate-report.txt", "installation-guide.txt", "deploy-svm-certificate.sh",
-    }
-    assert required <= {path.name for path in output.iterdir()}
+    assert {path.name for path in output.iterdir()} == {"README.txt", "deploy", "trust", "records"}
+    assert {"certificate.pem", "private-key.pem", "private-key-rsa.pem", "fullchain.pem",
+            "server.crt", "server.key", "deploy-svm-certificate.sh"} <= {p.name for p in (output / "deploy").iterdir()}
+    assert {"root-ca.pem", "intermediate-ca.pem", "ca-chain.pem"} <= {p.name for p in (output / "trust").iterdir()}
+    assert {"server.csr", "certificate-report.txt"} <= {p.name for p in (output / "records").iterdir()}
     certificate_text = engine.inspect_certificate(result["certificate"])
     subject_text = engine.run("x509", "-in", str(result["certificate"]), "-noout", "-subject")
     assert re.search(r"CN\s*=\s*svm-test\.gregnet\.local", subject_text)
@@ -175,7 +176,7 @@ def test_issue_sixview_manager_https_package(tmp_path: Path):
     assert result["server_certificate"].read_text().count("BEGIN CERTIFICATE") == 2
     assert result["root"].read_bytes() not in result["server_certificate"].read_bytes()
     assert "CSR / Certificate SAN Match: PASS" in result["report"].read_text(encoding="utf-8")
-    guide = result["installation_guide"].read_text(encoding="utf-8")
+    guide = result["readme"].read_text(encoding="utf-8")
     assert "TCP 18081" in guide
     assert "/opt/svm/ssl/server.crt" in guide
     assert "/opt/svm/ssl/server.key" in guide
@@ -238,14 +239,14 @@ def test_sixview_manager_reissue_reuses_and_rotates_key(tmp_path: Path):
         ["svm-test.local", "10.0.0.2"], "", "", reissue="existing",
     )
     assert reused["private_key"].read_bytes() == first_key
-    assert reused["archive"].joinpath("server.crt").exists()
+    assert reused["archive"].joinpath("deploy", "server.crt").exists()
 
     rotated = engine.issue_sixview_manager_https(
         workspace, output, Subject("svm-test.local", "GregNet"),
         ["svm-test.local", "10.0.0.3"], "", "", reissue="new",
     )
     assert rotated["private_key"].read_bytes() != first_key
-    assert rotated["archive"].joinpath("private-key.pem").exists()
+    assert rotated["archive"].joinpath("deploy", "private-key.pem").exists()
 
 
 def test_package_existing_sixview_manager_identity_without_reissue(tmp_path: Path):
@@ -281,7 +282,7 @@ def test_package_existing_sixview_manager_identity_without_reissue(tmp_path: Pat
     assert packaged["deploy_script"].exists()
     assert packaged["deploy_script"].stat().st_mode & 0o111
     assert "no certificate issued" in packaged["report"].read_text(encoding="utf-8").lower()
-    assert "did not issue" in packaged["installation_guide"].read_text(encoding="utf-8").lower()
+    assert "did not issue" in packaged["readme"].read_text(encoding="utf-8").lower()
     subprocess.run(["bash", "-n", str(packaged["deploy_script"])], check=True)
 
     try:
@@ -307,7 +308,7 @@ def test_ram_reissue_reuses_key_and_archives_previous_certificate(tmp_path: Path
         root_days=5475,
         intermediate_days=3650,
     )
-    output = project.device_folder("RAMTEST01")
+    output = project.ram_server_folder("RAMTEST01")
     first = engine.issue_ram_https(workspace, output, Subject("RAMTEST01", "GregNet"), ["192.168.1.10"], "", "", days=3500)
     old_key = first["private_key"].read_bytes()
     old_serial = re.search(r"Serial Number:\s*([0-9a-f:]+)", engine.inspect_certificate(first["certificate"]), re.IGNORECASE).group(1)
@@ -320,7 +321,7 @@ def test_ram_reissue_reuses_key_and_archives_previous_certificate(tmp_path: Path
     assert second["private_key"].read_bytes() == old_key
     assert "166.149.166.97" in engine.inspect_certificate(second["certificate"])
     assert old_serial != re.search(r"Serial Number:\s*([0-9a-f:]+)", engine.inspect_certificate(second["certificate"]), re.IGNORECASE).group(1)
-    assert second["archive"].joinpath("certificate.pem").exists()
+    assert second["archive"].joinpath("deploy", "certificate.pem").exists()
     assert engine.verify_key_matches(second["certificate"], second["private_key"], "")
 
 
@@ -330,12 +331,12 @@ def test_ram_reissue_with_new_key_archives_old_key(tmp_path: Path):
     project = Project(str(workspace), "GregNet", "RAM PKI", "local")
     project.save()
     engine.create_pki(workspace, Subject("GregNet Root", "GregNet"), Subject("GregNet Issuing", "GregNet"), "", root_days=5475, intermediate_days=3650)
-    output = project.device_folder("RAMTEST02")
+    output = project.ram_server_folder("RAMTEST02")
     first = engine.issue_ram_https(workspace, output, Subject("RAMTEST02", "GregNet"), ["10.0.0.2"], "", "", days=3500)
     old_key = first["private_key"].read_bytes()
     second = engine.issue_ram_https(workspace, output, Subject("RAMTEST02", "GregNet"), ["10.0.0.3"], "", "", days=3500, reissue="new")
     assert second["private_key"].read_bytes() != old_key
-    assert second["archive"].joinpath("private-key.pem").read_bytes() == old_key
+    assert second["archive"].joinpath("deploy", "private-key.pem").read_bytes() == old_key
 
 
 def test_legacy_project_migration(tmp_path: Path):
@@ -358,7 +359,7 @@ def test_unencrypted_pki_and_device(tmp_path: Path):
     project = Project(str(workspace), "Lab", "Lab PKI", "local")
     project.save()
     engine.create_pki(workspace, Subject("Lab Root", "Lab"), Subject("Lab Issuing", "Lab"), "")
-    result = engine.issue_server(workspace, project.device_folder("lab-edge"), Subject("lab-edge.local", "Lab"), ["lab-edge.local", "192.168.1.20"], "", "")
+    result = engine.issue_server(workspace, project.crimson_server_folder("lab-edge"), Subject("lab-edge.local", "Lab"), ["lab-edge.local", "192.168.1.20"], "", "")
     assert engine.verify_key_matches(result["certificate"], result["private_key"], "")
     assert "ENCRYPTED" not in (workspace / "root-ca/private/root-ca.key.pem").read_text()
     assert "ENCRYPTED" not in result["private_key"].read_text()
@@ -374,7 +375,7 @@ def test_issue_requires_ca_password_for_encrypted_project(tmp_path: Path):
     try:
         engine.issue_server(
             workspace,
-            project.device_folder("lab-edge"),
+            project.crimson_server_folder("lab-edge"),
             Subject("lab-edge.local", "Lab"),
             ["lab-edge.local", "192.168.1.20"],
             "",
@@ -397,7 +398,7 @@ def test_issue_with_wrong_ca_password_gives_friendly_error(tmp_path: Path):
     try:
         engine.issue_server(
             workspace,
-            project.device_folder("lab-edge"),
+            project.crimson_server_folder("lab-edge"),
             Subject("lab-edge.local", "Lab"),
             ["lab-edge.local", "192.168.1.20"],
             "definitely-the-wrong-password",
@@ -422,7 +423,7 @@ def test_wrong_ca_password_leaves_no_partial_output_and_retry_succeeds(tmp_path:
     project = Project(str(workspace), "Lab", "Lab PKI", "local")
     project.save()
     engine.create_pki(workspace, Subject("Lab Root", "Lab"), Subject("Lab Issuing", "Lab"), "ca-password")
-    output = project.device_folder("lab-edge")
+    output = project.crimson_server_folder("lab-edge")
 
     try:
         engine.issue_server(
@@ -453,7 +454,7 @@ def test_package_existing_requires_password_for_encrypted_private_key(tmp_path: 
     engine.create_pki(workspace, Subject("Lab Root", "Lab"), Subject("Lab Issuing", "Lab"), "")
     issued = engine.issue_server(
         workspace,
-        project.device_folder("lab-edge"),
+        project.crimson_server_folder("lab-edge"),
         Subject("lab-edge.local", "Lab"),
         ["lab-edge.local", "192.168.1.20"],
         "",
@@ -594,7 +595,7 @@ def test_mqtt_broker_reissue_reuses_key_and_archives_package(tmp_path: Path):
     old_key = first["private_key"].read_bytes()
     second = engine.issue_mqtt_broker(workspace, output, Subject("broker.local", "MQTT Org"), ["broker.local", "10.0.0.2"], "", "", days=3500, reissue="existing")
     assert second["private_key"].read_bytes() == old_key
-    assert second["archive"].joinpath("broker-private-key.pem").exists()
+    assert second["archive"].joinpath("deploy", "broker-private-key.pem").exists()
     assert "10.0.0.2" in engine.inspect_certificate(second["certificate"])
 
 
@@ -609,7 +610,7 @@ def test_opcua_reissue_reuses_key_and_archives_package(tmp_path: Path):
     old_key = first["private_key"].read_bytes()
     second = engine.issue_opcua_server(workspace, output, Subject("server.local", "UA Org"), ["server.local", "10.0.0.2"], "urn:server.local:server", "", "", days=3500, reissue="existing")
     assert second["private_key"].read_bytes() == old_key
-    assert second["archive"].joinpath("server-private-key.pem").exists()
+    assert second["archive"].joinpath("deploy", "server-private-key.pem").exists()
     assert "10.0.0.2" in engine.inspect_certificate(second["certificate"])
 
 
@@ -674,7 +675,9 @@ def test_mosquitto_installer_safety_content(tmp_path: Path):
     assert "root-ca.key.pem" not in install_script
     assert "intermediate-ca.key.pem" not in install_script
     assert "backup" in install_script.lower()
-    assert "mosquitto -c /etc/mosquitto/mosquitto.conf" in install_script
+    assert "--test-config" in install_script
+    assert "-v -d" not in install_script and "pkill" not in install_script
+    assert "ENCRYPTED" in install_script and "include_dir" in install_script
     assert "restore" in install_script.lower()
     assert "Type REMOVE to continue" in remove_script
     assert "openssl s_client" in verify_script
@@ -772,7 +775,7 @@ def test_issue_opcua_server_package_with_crl(tmp_path: Path):
     assert result["crl_der"].read_bytes().startswith(b"0")
     assert result["root_der"].exists()
     assert result["intermediate_der"].exists()
-    assert result["installation_guide"].exists()
+    assert result["readme"].exists()
     assert "OK" in engine.verify_chain(result["certificate"], result["ca_chain"])
 
 
@@ -809,7 +812,7 @@ def test_issue_opcua_client_package_with_crl(tmp_path: Path):
     assert result["crl_der"].read_bytes().startswith(b"0")
     assert result["root_der"].exists()
     assert result["intermediate_der"].exists()
-    assert result["installation_guide"].exists()
+    assert result["readme"].exists()
     assert "OK" in engine.verify_chain(result["certificate"], result["ca_chain"])
 
 
@@ -824,7 +827,7 @@ def test_opcua_client_reissue_reuses_key_and_archives_package(tmp_path: Path):
     old_key = first["private_key"].read_bytes()
     second = engine.issue_opcua_client(workspace, output, Subject("client.local", "UA Org"), ["client.local", "10.0.0.2"], "urn:client.local:client", "", "", days=3500, reissue="existing")
     assert second["private_key"].read_bytes() == old_key
-    assert second["archive"].joinpath("client-private-key.pem").exists()
+    assert second["archive"].joinpath("deploy", "client-private-key.pem").exists()
     assert "10.0.0.2" in engine.inspect_certificate(second["certificate"])
 
 
@@ -879,3 +882,320 @@ def test_opcua_project_folder_created(tmp_path: Path):
     project.save()
     assert (project.path / "opcua" / "servers").is_dir()
     assert (project.path / "opcua" / "clients").is_dir()
+
+def _hivemq_project(tmp_path: Path, name: str):
+    engine = OpenSSLEngine()
+    workspace = tmp_path / name
+    project = Project(str(workspace), "MQTT Org", "MQTT PKI", "local")
+    project.save()
+    engine.create_pki(workspace, Subject("MQTT Root", "MQTT Org"), Subject("MQTT Issuing", "MQTT Org"), "")
+    return engine, workspace, project
+
+
+def test_issue_hivemq_broker_mutual_tls_package(tmp_path: Path):
+    engine, workspace, project = _hivemq_project(tmp_path, "hivemq-mtls")
+    output = project.mqtt_broker_folder("hivemq-01")
+    result = engine.issue_hivemq_broker(
+        workspace, output, Subject("hivemq.example.local", "MQTT Org"),
+        ["hivemq.example.local", "10.0.0.8"], "", "broker-key-pw",
+        keystore_password="keystore-pw", mutual_tls=True)
+
+    for key in ("hivemq_keystore", "hivemq_truststore", "hivemq_config",
+                "hivemq_install", "hivemq_verify", "readme"):
+        assert result[key].exists(), key
+    assert not (output / "mosquitto-tls.conf").exists()
+    cert_text = engine.inspect_certificate(result["certificate"])
+    assert "TLS Web Server Authentication" in cert_text
+
+    # The keystore holds the broker key + certificate; the truststore holds
+    # the issuing and root CA and no private key.
+    keystore_leaf = engine._run("pkcs12", "-in", str(result["hivemq_keystore"]), "-nokeys", "-clcerts",
+                                "-passin", "file:{PW}", passwords={"{PW}": "keystore-pw"})
+    assert "CN=hivemq.example.local" in keystore_leaf.replace(" = ", "=")
+    truststore = engine._run("pkcs12", "-in", str(result["hivemq_truststore"]), "-nokeys",
+                             "-passin", "file:{PW}", passwords={"{PW}": "keystore-pw"})
+    assert truststore.count("BEGIN CERTIFICATE") == 2
+    assert "PRIVATE KEY" not in truststore
+
+    config = result["hivemq_config"].read_text(encoding="utf-8")
+    assert "<client-authentication-mode>REQUIRED</client-authentication-mode>" in config
+    assert "hivemq-truststore.p12" in config
+    assert "${ENV:HIVEMQ_TLS_KEYSTORE_PASSWORD}" in config
+    assert "<port>8883</port>" in config
+
+    for path in output.rglob("*"):
+        if path.is_file() and path.suffix != ".p12":
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            assert "keystore-pw" not in text and "broker-key-pw" not in text, path
+            assert "root-ca.key.pem" not in text and "intermediate-ca.key.pem" not in text, path
+    for script in (result["hivemq_install"], result["hivemq_verify"]):
+        assert subprocess.run(["bash", "-n", str(script)], capture_output=True).returncode == 0, script
+    install = result["hivemq_install"].read_text(encoding="utf-8")
+    assert "Type INSTALL" in install and "rollback.sh" in install and "MUTUAL_TLS=1" in install
+
+
+def test_hivemq_truststore_is_readable_by_java(tmp_path: Path):
+    import shutil as _shutil
+    import pytest
+    if not _shutil.which("keytool"):
+        pytest.skip("keytool not installed")
+    engine, workspace, project = _hivemq_project(tmp_path, "hivemq-java")
+    result = engine.issue_hivemq_broker(
+        workspace, project.mqtt_broker_folder("hivemq-01"), Subject("hivemq.local", "MQTT Org"),
+        ["hivemq.local"], "", "", keystore_password="keystore-pw", mutual_tls=True)
+    def keytool_list(store: Path) -> str:
+        return subprocess.run(["keytool", "-list", "-storetype", "PKCS12", "-keystore", str(store),
+                               "-storepass", "keystore-pw"], capture_output=True, text=True, check=True).stdout
+    assert "PrivateKeyEntry" in keytool_list(result["hivemq_keystore"])
+    assert keytool_list(result["hivemq_truststore"]).count("trustedCertEntry") == 2
+
+
+def test_hivemq_broker_without_mutual_tls_has_no_truststore(tmp_path: Path):
+    engine, workspace, project = _hivemq_project(tmp_path, "hivemq-tls")
+    output = project.mqtt_broker_folder("hivemq-01")
+    result = engine.issue_hivemq_broker(
+        workspace, output, Subject("hivemq.local", "MQTT Org"), ["hivemq.local"], "", "",
+        keystore_password="keystore-pw", mutual_tls=False)
+    assert "hivemq_truststore" not in result
+    assert not (output / "hivemq-truststore.p12").exists()
+    config = result["hivemq_config"].read_text(encoding="utf-8")
+    assert "<client-authentication-mode>NONE</client-authentication-mode>" in config
+    assert "<truststore>" not in config
+    assert "MUTUAL_TLS=0" in result["hivemq_install"].read_text(encoding="utf-8")
+
+
+def test_hivemq_keystore_password_is_validated_before_any_output(tmp_path: Path):
+    engine, workspace, project = _hivemq_project(tmp_path, "hivemq-bad-password")
+    output = project.mqtt_broker_folder("hivemq-01")
+    for bad in ("short", 'has"quote'):
+        try:
+            engine.issue_hivemq_broker(workspace, output, Subject("hivemq.local", "MQTT Org"),
+                                       ["hivemq.local"], "", "", keystore_password=bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Keystore password {bad!r} should be rejected")
+    assert not output.exists()
+
+
+def test_hivemq_reissue_reuses_key_and_archives_package(tmp_path: Path):
+    engine, workspace, project = _hivemq_project(tmp_path, "hivemq-reissue")
+    output = project.mqtt_broker_folder("hivemq-01")
+    first = engine.issue_hivemq_broker(workspace, output, Subject("hivemq.local", "MQTT Org"),
+                                       ["hivemq.local"], "", "", keystore_password="keystore-pw")
+    old_key = first["private_key"].read_bytes()
+    second = engine.issue_hivemq_broker(workspace, output, Subject("hivemq.local", "MQTT Org"),
+                                        ["hivemq.local", "10.0.0.9"], "", "",
+                                        keystore_password="keystore-pw", reissue="existing")
+    assert second["private_key"].read_bytes() == old_key
+    assert second["archive"].joinpath("deploy", "hivemq-keystore.p12").exists()
+    assert "10.0.0.9" in engine.inspect_certificate(second["certificate"])
+
+
+def test_mqtt_client_certificate_without_san(tmp_path: Path):
+    engine, workspace, project = _hivemq_project(tmp_path, "mqtt-client-no-san")
+    result = engine.issue_mqtt_client(workspace, project.mqtt_client_folder("plc-01"),
+                                      Subject("plc-01", "MQTT Org"), [], "", "")
+    text = engine.inspect_certificate(result["certificate"])
+    assert "TLS Web Client Authentication" in text
+    assert "Subject Alternative Name" not in text
+
+
+def test_server_certificate_without_san_leaves_no_partial_output(tmp_path: Path):
+    engine, workspace, project = _hivemq_project(tmp_path, "server-no-san")
+    output = project.mqtt_broker_folder("broker-01")
+    try:
+        engine.issue_mqtt_broker(workspace, output, Subject("broker", "MQTT Org"), [], "", "")
+    except ValueError as exc:
+        assert "Subject Alternative Name" in str(exc)
+    else:
+        raise AssertionError("A broker certificate without SANs should be rejected")
+    assert not any(path.is_file() for path in output.rglob("*"))
+
+
+def _issue_every_profile(engine: OpenSSLEngine, workspace: Path, project: Project) -> dict[str, dict[str, Path]]:
+    return {
+        "crimson": engine.issue_server(workspace, project.crimson_server_folder("crimson-01"),
+                                       Subject("crimson-01.local", "MQTT Org"), ["crimson-01.local"], "", ""),
+        "ram": engine.issue_ram_https(workspace, project.ram_server_folder("ram-01"),
+                                      Subject("ram-01", "MQTT Org"), ["10.0.0.6"], "", ""),
+        "svm": engine.issue_sixview_manager_https(workspace, project.svm_server_folder("svm-01"),
+                                                  Subject("svm.local", "MQTT Org"), ["svm.local"], "", ""),
+        "mosquitto": engine.issue_mqtt_broker(workspace, project.mqtt_broker_folder("mosq-01"),
+                                              Subject("mosq.local", "MQTT Org"), ["mosq.local"], "", "",
+                                              mutual_tls=True),
+        "hivemq": engine.issue_hivemq_broker(workspace, project.mqtt_broker_folder("hivemq-01"),
+                                             Subject("hivemq.local", "MQTT Org"), ["hivemq.local"], "", "",
+                                             keystore_password="keystore-pw"),
+        "mqtt_client": engine.issue_mqtt_client(workspace, project.mqtt_client_folder("plc-01"),
+                                                Subject("plc-01", "MQTT Org"), [], "", ""),
+        "opcua": engine.issue_opcua_server(workspace, project.opcua_server_folder("kep-01"),
+                                           Subject("kep.local", "MQTT Org"), ["kep.local"],
+                                           "urn:kep.local:server", "", ""),
+    }
+
+
+def test_every_package_uses_deploy_trust_records_layout(tmp_path: Path):
+    engine, workspace, project = _hivemq_project(tmp_path, "layout")
+    for profile, result in _issue_every_profile(engine, workspace, project).items():
+        package = result["readme"].parent
+        assert {p.name for p in package.iterdir()} == {"README.txt", "deploy", "trust", "records"}, profile
+        assert result["private_key"].parent == package / "deploy", profile
+        assert result["certificate"].parent == package / "deploy", profile
+        assert result["root"] == package / "trust" / "root-ca.pem", profile
+        assert result["csr"].parent == package / "records", profile
+        assert result["report"].parent == package / "records", profile
+        for key, value in result.items():
+            assert value.exists(), (profile, key, value)
+        names = {p.name for p in package.rglob("*")}
+        assert not names & {"root-ca.key.pem", "intermediate-ca.key.pem"}, profile
+        assert not names & {"trust-installers", "root-ca.cert.pem"}, profile
+        readme = result["readme"].read_text(encoding="utf-8")
+        assert "WHAT TO DO WITH THIS FOLDER" in readme and "deploy/" in readme, profile
+        # Every file is described in the README.
+        for folder in ("deploy", "trust", "records"):
+            for entry in (package / folder).iterdir():
+                assert entry.name in readme, (profile, entry.name)
+    # Targets that need a trust anchor themselves get their own copy.
+    assert (project.mqtt_broker_folder("mosq-01") / "deploy" / "ca-chain.pem").is_file()
+    assert (project.mqtt_client_folder("plc-01") / "deploy" / "root-ca.pem").is_file()
+    assert "certfile /etc/mosquitto/certs/broker-fullchain.pem" in \
+        (project.mqtt_broker_folder("mosq-01") / "deploy" / "mosquitto-tls.conf").read_text()
+    trust_script = (project.crimson_server_folder("crimson-01") / "trust" / "install-trust-linux.sh").read_text()
+    assert '"$HERE/root-ca.pem"' in trust_script
+    assert not (workspace / "intermediate-ca.ext").exists()
+    assert not (workspace / "backups").exists() and not (workspace / "reports").exists()
+
+
+def test_reissue_of_flat_legacy_package_reuses_key(tmp_path: Path):
+    """Packages created before the deploy/trust/records layout kept every file
+    at the top level; reissuing them must still find and reuse the key."""
+    engine, workspace, project = _hivemq_project(tmp_path, "legacy")
+    output = project.mqtt_broker_folder("broker-01")
+    first = engine.issue_mqtt_broker(workspace, output, Subject("broker.local", "MQTT Org"),
+                                     ["broker.local"], "", "")
+    for path in list(output.rglob("*")):
+        if path.is_file():
+            path.rename(output / path.name)
+    for folder in ("deploy", "trust", "records"):
+        shutil.rmtree(output / folder)
+    old_key = (output / "broker-private-key.pem").read_bytes()
+    second = engine.issue_mqtt_broker(workspace, output, Subject("broker.local", "MQTT Org"),
+                                      ["broker.local", "10.0.0.2"], "", "", reissue="existing")
+    assert second["private_key"].read_bytes() == old_key
+    assert second["archive"].joinpath("broker-private-key.pem").exists()
+    assert first["certificate"].name == second["certificate"].name
+
+
+def test_find_package_file_supports_both_layouts(tmp_path: Path):
+    from ica.package_layout import find_package_file
+    new = tmp_path / "new"
+    (new / "deploy").mkdir(parents=True); (new / "trust").mkdir(); (new / "records").mkdir()
+    for rel in ("deploy/certificate.pem", "trust/ca-chain.pem", "records/server.csr"):
+        (new / rel).write_text("x")
+    legacy = tmp_path / "legacy"; legacy.mkdir()
+    for name in ("certificate.pem", "ca-chain.pem", "server.csr"):
+        (legacy / name).write_text("x")
+    assert find_package_file(new, "certificate.pem") == new / "deploy" / "certificate.pem"
+    assert find_package_file(new, "ca-chain.pem") == new / "trust" / "ca-chain.pem"
+    assert find_package_file(new, "server.csr") == new / "records" / "server.csr"
+    assert find_package_file(legacy, "ca-chain.pem") == legacy / "ca-chain.pem"
+    assert find_package_file(new, "missing.pem") is None
+
+
+def _flatten_to_legacy(package: Path) -> None:
+    """Rewrite a package into the earlier flat layout, with no manifest.
+    Subfolders such as opcua-trust/ stayed subfolders in that layout."""
+    (package / "README.txt").unlink(missing_ok=True)
+    (package / "records" / "ica-package.json").unlink(missing_ok=True)
+    for folder in ("deploy", "trust", "records"):
+        for entry in list((package / folder).iterdir()):
+            entry.rename(package / entry.name)
+        (package / folder).rmdir()
+
+
+def test_new_project_uses_per_profile_folders(tmp_path: Path):
+    project = Project(str(tmp_path / "folders"), "Org")
+    project.save()
+    for relative in ("crimson/servers", "ram/servers", "svm/servers", "mqtt/brokers",
+                     "mqtt/clients", "opcua/servers", "opcua/clients"):
+        assert (project.path / relative).is_dir(), relative
+    assert not (project.path / "devices").exists()
+    assert project.crimson_server_folder("plc 7") == project.path / "crimson" / "servers" / "plc-7"
+    assert project.ram_server_folder("ram-1") == project.path / "ram" / "servers" / "ram-1"
+
+
+def test_package_manifest_records_profile_and_identity(tmp_path: Path):
+    engine, workspace, project = _hivemq_project(tmp_path, "manifest")
+    packages = _issue_every_profile(engine, workspace, project)
+    expected = {"crimson": ("flexedge_https", None), "ram": ("ram_https", None),
+                "svm": ("sixview_manager_https_server", None), "mosquitto": ("mqtt_broker", "mosquitto"),
+                "hivemq": ("mqtt_broker", "hivemq"), "mqtt_client": ("mqtt_client", None),
+                "opcua": ("opcua_server", None)}
+    for name, result in packages.items():
+        data = json.loads(result["manifest"].read_text(encoding="utf-8"))
+        assert result["manifest"].parent.name == "records"
+        assert (data["profile"], data.get("variant")) == expected[name], name
+        assert data["source"] == "issued" and data["serial"] and data["not_after"], name
+        serial = engine.run("x509", "-in", str(result["certificate"]), "-noout", "-serial").split("=")[1].strip()
+        assert data["serial"] == serial, name
+    assert json.loads(packages["crimson"]["manifest"].read_text())["sans"] == ["DNS:crimson-01.local"]
+
+
+def test_package_profile_detects_legacy_packages(tmp_path: Path):
+    from ica.package_layout import package_profile
+    engine, workspace, project = _hivemq_project(tmp_path, "detect")
+    for name, result in _issue_every_profile(engine, workspace, project).items():
+        package = result["readme"].parent
+        expected = package_profile(package)
+        _flatten_to_legacy(package)
+        assert package_profile(package) == expected, name
+    assert package_profile(project.ram_server_folder("ram-01")) == "ram_https"
+    assert package_profile(project.crimson_server_folder("crimson-01")) == "flexedge_https"
+    assert package_profile(tmp_path) is None
+
+
+def test_legacy_crimson_package_is_adopted_and_reissued_with_same_key(tmp_path: Path):
+    engine, workspace, project = _hivemq_project(tmp_path, "adopt-crimson")
+    legacy = project.legacy_device_folder("edge-01")
+    engine.issue_server(workspace, legacy, Subject("edge-01.local", "MQTT Org"), ["edge-01.local"], "", "")
+    _flatten_to_legacy(legacy)
+    old_key = (legacy / "private-key.pem").read_bytes()
+
+    # A different profile with the same name leaves the old package alone.
+    assert project.adopt_legacy_package("edge-01", "ram_https", project.ram_server_folder("edge-01")) is None
+    assert legacy.is_dir()
+
+    destination = project.crimson_server_folder("edge-01")
+    assert project.adopt_legacy_package("edge-01", "flexedge_https", destination) == destination
+    assert not (workspace / "devices").exists()
+    result = engine.issue_server(workspace, destination, Subject("edge-01.local", "MQTT Org"),
+                                 ["edge-01.local", "10.0.0.7"], "", "", reissue="existing")
+    assert result["private_key"].read_bytes() == old_key
+    assert result["archive"].joinpath("private-key.pem").read_bytes() == old_key
+    assert result["private_key"] == destination / "deploy" / "private-key.pem"
+
+
+def test_legacy_ram_package_with_new_layout_is_adopted(tmp_path: Path):
+    engine, workspace, project = _hivemq_project(tmp_path, "adopt-ram")
+    engine.issue_ram_https(workspace, project.legacy_device_folder("ram-07"),
+                           Subject("ram-07", "MQTT Org"), ["10.0.0.8"], "", "")
+    engine.issue_server(workspace, project.legacy_device_folder("other"),
+                        Subject("other.local", "MQTT Org"), ["other.local"], "", "")
+    destination = project.ram_server_folder("ram-07")
+    assert project.adopt_legacy_package("ram-07", "ram_https", destination) == destination
+    assert (destination / "deploy" / "ram-https.pem").is_file()
+    assert (workspace / "devices" / "other").is_dir()  # unrelated packages stay
+
+
+def test_adoption_refuses_when_both_locations_have_a_package(tmp_path: Path):
+    engine, workspace, project = _hivemq_project(tmp_path, "adopt-conflict")
+    for folder in (project.legacy_device_folder("edge-02"), project.crimson_server_folder("edge-02")):
+        engine.issue_server(workspace, folder, Subject("edge-02.local", "MQTT Org"), ["edge-02.local"], "", "")
+    try:
+        project.adopt_legacy_package("edge-02", "flexedge_https", project.crimson_server_folder("edge-02"))
+    except FileExistsError as exc:
+        assert "Both" in str(exc)
+    else:
+        raise AssertionError("Adoption must not merge two packages")
+    assert project.legacy_device_folder("edge-02").is_dir()

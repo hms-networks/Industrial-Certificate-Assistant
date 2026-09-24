@@ -11,7 +11,9 @@ def render_mosquitto_tls_config(mutual_tls: bool = False) -> str:
         "listener 8883",
         "",
         "cafile /etc/mosquitto/certs/ca-chain.pem",
-        "certfile /etc/mosquitto/certs/broker-certificate.pem",
+        # The full chain lets clients that hold only root-ca.pem build the path
+        # to the root through the issuing CA.
+        "certfile /etc/mosquitto/certs/broker-fullchain.pem",
         "keyfile /etc/mosquitto/certs/broker-private-key.pem",
         "",
         "tls_version tlsv1.2",
@@ -30,143 +32,157 @@ def render_mosquitto_tls_config(mutual_tls: bool = False) -> str:
         "# Note: Mosquitto/OpenSSL may negotiate TLS 1.3 when available.",
         "# This configuration sets TLS 1.2 as the minimum accepted version.",
     ]
+    if not mutual_tls:
+        lines += [
+            "#",
+            "# Without mutual TLS, allow_anonymous false means clients need an MQTT",
+            "# username and password. Configure password_file in mosquitto.conf.",
+        ]
     return "\n".join(lines) + "\n"
 
 
-def _install_script() -> str:
-    return """#!/usr/bin/env bash
-set -euo pipefail
+_INSTALL_SCRIPT = r'''#!/usr/bin/env bash
+# Installs the ICA Mosquitto TLS listener. Run from the package's deploy/ folder.
+set -Eeuo pipefail
 
-if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
-  echo "Run as root." >&2
-  exit 1
+HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+MAIN_CONF=${MOSQUITTO_CONF:-/etc/mosquitto/mosquitto.conf}
+CONF_DIR=${MOSQUITTO_CONF_DIR:-/etc/mosquitto/conf.d}
+CERTS_DIR=${MOSQUITTO_CERTS_DIR:-/etc/mosquitto/certs}
+SERVICE=${MOSQUITTO_SERVICE:-mosquitto.service}
+TLS_CONF_DEST="$CONF_DIR/industrial-mqtt-tls.conf"
+BACKUP_ROOT=${MOSQUITTO_BACKUP_ROOT:-/var/backups/industrial-certificate-assistant}
+FILES=(broker-fullchain.pem broker-private-key.pem ca-chain.pem)
+CHANGED=0
+BACKUP=""
+
+fail() {
+    printf 'ERROR: %s\n' "$*" >&2
+    if (( CHANGED )) && [[ -n "$BACKUP" && -x "$BACKUP/rollback.sh" ]]; then
+        printf 'Restoring the previous Mosquitto configuration...\n' >&2
+        CHANGED=0
+        "$BACKUP/rollback.sh" || true
+    fi
+    exit 1
+}
+
+(( EUID == 0 )) || fail "Run this installer with sudo."
+command -v mosquitto >/dev/null 2>&1 || fail "Mosquitto is not installed."
+for command in openssl systemctl install sha256sum awk timeout; do
+    command -v "$command" >/dev/null 2>&1 || fail "Required command not found: $command"
+done
+for f in "${FILES[@]}" mosquitto-tls.conf; do
+    [[ -f "$HERE/$f" ]] || fail "Missing package file: $HERE/$f"
+done
+[[ -f "$MAIN_CONF" ]] || fail "Mosquitto configuration not found: $MAIN_CONF"
+getent group mosquitto >/dev/null || fail "The mosquitto group does not exist."
+if grep -qE 'ENCRYPTED PRIVATE KEY|Proc-Type: 4,ENCRYPTED' "$HERE/broker-private-key.pem"; then
+    fail "broker-private-key.pem is encrypted. Mosquitto cannot prompt for a key passphrase when started by systemd. Reissue the broker certificate without key encryption, and protect the file with permissions instead."
 fi
-
-if ! command -v mosquitto >/dev/null 2>&1; then
-  echo "Mosquitto is not installed." >&2
-  exit 1
+if ! grep -Eq "^[[:space:]]*include_dir[[:space:]]+$CONF_DIR/?[[:space:]]*$" "$MAIN_CONF"; then
+    fail "$MAIN_CONF does not contain 'include_dir $CONF_DIR', so the TLS fragment would be ignored. Add that line (Debian/Ubuntu ship it by default) and rerun."
 fi
-
-HERE=\"$(cd -- \"$(dirname -- \"${BASH_SOURCE[0]}\")\" && pwd)\"
-CERTS_DIR=\"/etc/mosquitto/certs\"
-TLS_CONF_DEST=\"/etc/mosquitto/conf.d/industrial-mqtt-tls.conf\"
-BACKUP_DIR=\"/etc/mosquitto/ica-backups\"
-STAMP=\"$(date +%Y%m%d-%H%M%S)\"
-BACKUP_CONF=\"$BACKUP_DIR/mosquitto.conf.$STAMP.bak\"
-BACKUP_TLS=\"$BACKUP_DIR/industrial-mqtt-tls.conf.$STAMP.bak\"
-
-FILES=(
-  broker-certificate.pem
-  broker-fullchain.pem
-  ca-chain.pem
-  root-ca.pem
-  broker-private-key.pem
-)
+if grep -RqsE '^[[:space:]]*listener[[:space:]]+8883([[:space:]]|$)' "$MAIN_CONF" "$CONF_DIR" --exclude="$(basename -- "$TLS_CONF_DEST")"; then
+    fail "Another Mosquitto listener on port 8883 already exists. Remove it and rerun."
+fi
 
 echo "This installer will:"
-echo "  - Backup /etc/mosquitto/mosquitto.conf and existing industrial TLS fragment"
-echo "  - Install broker certs into $CERTS_DIR"
-echo "  - Install TLS fragment into $TLS_CONF_DEST"
-echo "  - Validate config before restarting mosquitto"
+echo "  - Back up the existing ICA TLS fragment and certificates"
+echo "  - Install the broker certificate chain, key, and CA chain into $CERTS_DIR"
+echo "  - Install the TLS listener fragment as $TLS_CONF_DEST"
+echo "  - Restart $SERVICE and confirm the certificate served on port 8883"
 read -r -p "Type INSTALL to continue: " confirm
-[[ \"$confirm\" == "INSTALL" ]] || { echo "Cancelled."; exit 1; }
+[[ "$confirm" == "INSTALL" ]] || fail "Cancelled; no files were changed."
 
-mkdir -p "$BACKUP_DIR"
-if [[ -f /etc/mosquitto/mosquitto.conf ]]; then
-  cp -a /etc/mosquitto/mosquitto.conf "$BACKUP_CONF"
-fi
-if [[ -f "$TLS_CONF_DEST" ]]; then
-  cp -a "$TLS_CONF_DEST" "$BACKUP_TLS"
-fi
-
-install -d -m 0750 -o root -g mosquitto "$CERTS_DIR"
-
+BACKUP="$BACKUP_ROOT/mosquitto-$(date +%Y%m%d-%H%M%S)"
+install -d -m 0700 "$BACKUP"
+[[ -f "$TLS_CONF_DEST" ]] && cp -a "$TLS_CONF_DEST" "$BACKUP/"
 for f in "${FILES[@]}"; do
-  src="$HERE/$f"
-  [[ -f "$src" ]] || { echo "Missing required file: $src" >&2; exit 1; }
+    [[ -f "$CERTS_DIR/$f" ]] && cp -a "$CERTS_DIR/$f" "$BACKUP/"
 done
+{
+    echo '#!/usr/bin/env bash'
+    echo 'set -uo pipefail'
+    echo "if [[ -f '$BACKUP/$(basename -- "$TLS_CONF_DEST")' ]]; then cp -a '$BACKUP/$(basename -- "$TLS_CONF_DEST")' '$TLS_CONF_DEST'; else rm -f '$TLS_CONF_DEST'; fi"
+    for f in "${FILES[@]}"; do
+        echo "if [[ -f '$BACKUP/$f' ]]; then cp -a '$BACKUP/$f' '$CERTS_DIR/$f'; else rm -f '$CERTS_DIR/$f'; fi"
+    done
+    echo "systemctl restart '$SERVICE'"
+    echo "systemctl --no-pager --full status '$SERVICE' | sed -n '1,10p'"
+} >"$BACKUP/rollback.sh"
+chmod 0700 "$BACKUP/rollback.sh"
 
-install -m 0644 -o root -g mosquitto "$HERE/broker-certificate.pem" "$CERTS_DIR/broker-certificate.pem"
+CHANGED=1
+install -d -m 0750 -o root -g mosquitto "$CERTS_DIR"
 install -m 0644 -o root -g mosquitto "$HERE/broker-fullchain.pem" "$CERTS_DIR/broker-fullchain.pem"
 install -m 0644 -o root -g mosquitto "$HERE/ca-chain.pem" "$CERTS_DIR/ca-chain.pem"
-install -m 0644 -o root -g mosquitto "$HERE/root-ca.pem" "$CERTS_DIR/root-ca.pem"
 install -m 0640 -o root -g mosquitto "$HERE/broker-private-key.pem" "$CERTS_DIR/broker-private-key.pem"
+install -d -m 0755 "$CONF_DIR"
 install -m 0644 -o root -g root "$HERE/mosquitto-tls.conf" "$TLS_CONF_DEST"
-
 if command -v restorecon >/dev/null 2>&1; then
-  restorecon -Rv /etc/mosquitto || true
+    restorecon -R /etc/mosquitto || true
 fi
 
-if ! mosquitto -c /etc/mosquitto/mosquitto.conf -v -d; then
-  echo "Mosquitto config validation failed; restoring backups." >&2
-  [[ -f "$BACKUP_CONF" ]] && cp -a "$BACKUP_CONF" /etc/mosquitto/mosquitto.conf
-  [[ -f "$BACKUP_TLS" ]] && cp -a "$BACKUP_TLS" "$TLS_CONF_DEST" || rm -f "$TLS_CONF_DEST"
-  exit 1
+# Mosquitto 2.1+ can check a configuration without starting a broker.
+if mosquitto -h 2>&1 | grep -q -- '--test-config'; then
+    mosquitto -c "$MAIN_CONF" --test-config || fail "Mosquitto rejected the new configuration."
 fi
+systemctl restart "$SERVICE" || fail "$SERVICE failed to restart. Check: journalctl -u $SERVICE"
 
-pkill -f "mosquitto -c /etc/mosquitto/mosquitto.conf -v -d" >/dev/null 2>&1 || true
+EXPECTED=$(openssl x509 -in "$HERE/broker-fullchain.pem" -outform DER | sha256sum | awk '{print $1}')
+SERVED=""
+for attempt in {1..20}; do
+    if timeout 3 openssl s_client -connect 127.0.0.1:8883 -showcerts </dev/null 2>/dev/null >"$BACKUP/served.txt" \
+            || openssl x509 -in "$BACKUP/served.txt" -noout >/dev/null 2>&1; then
+        SERVED=$(openssl x509 -in "$BACKUP/served.txt" -outform DER 2>/dev/null | sha256sum | awk '{print $1}')
+        [[ "$SERVED" == "$EXPECTED" ]] && break
+    fi
+    sleep 1
+done
+[[ "$SERVED" == "$EXPECTED" ]] || fail "Mosquitto is not presenting the deployed broker certificate on port 8883. Check: journalctl -u $SERVICE"
+rm -f "$BACKUP/served.txt"
+CHANGED=0
 
-systemctl restart mosquitto
-systemctl --no-pager --full status mosquitto | sed -n '1,10p'
-
-if command -v ss >/dev/null 2>&1; then
-  ss -ltnp | grep ':8883' || { echo "Port 8883 is not listening." >&2; exit 1; }
-fi
-
-echo "Mosquitto TLS installed. Suggested checks:"
-echo "  openssl s_client -connect <broker-host>:8883 -servername <broker-dns> -CAfile $CERTS_DIR/root-ca.pem"
-echo "  mosquitto_pub -h <broker-host> -p 8883 --cafile $CERTS_DIR/root-ca.pem -t ica/test -m hello"
-"""
+echo
+echo "Mosquitto TLS installed and serving the new certificate on port 8883."
+echo "Backup and rollback script: $BACKUP/rollback.sh"
+echo "Next, from a client machine: trust/verify-mqtt-tls.sh <broker-host> 8883 [client-cert client-key]"
+'''
 
 
-def _remove_script() -> str:
-    return """#!/usr/bin/env bash
+_REMOVE_SCRIPT = r'''#!/usr/bin/env bash
+# Removes the ICA Mosquitto TLS listener installed by install-mosquitto-tls.sh.
 set -euo pipefail
 
-if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
-  echo "Run as root." >&2
-  exit 1
-fi
+CONF_DIR=${MOSQUITTO_CONF_DIR:-/etc/mosquitto/conf.d}
+CERTS_DIR=${MOSQUITTO_CERTS_DIR:-/etc/mosquitto/certs}
+SERVICE=${MOSQUITTO_SERVICE:-mosquitto.service}
+TLS_CONF_DEST="$CONF_DIR/industrial-mqtt-tls.conf"
 
-TLS_CONF_DEST=\"/etc/mosquitto/conf.d/industrial-mqtt-tls.conf\"
-CERTS_DIR=\"/etc/mosquitto/certs\"
-BACKUP_DIR=\"/etc/mosquitto/ica-backups\"
+if (( EUID != 0 )); then
+    echo "Run as root." >&2
+    exit 1
+fi
 
 echo "This will remove ICA-managed Mosquitto TLS files:"
 echo "  $TLS_CONF_DEST"
-echo "  $CERTS_DIR/broker-certificate.pem"
 echo "  $CERTS_DIR/broker-fullchain.pem"
-echo "  $CERTS_DIR/ca-chain.pem"
-echo "  $CERTS_DIR/root-ca.pem"
 echo "  $CERTS_DIR/broker-private-key.pem"
+echo "  $CERTS_DIR/ca-chain.pem"
+echo "To return to a previous certificate instead, run its rollback.sh from"
+echo "/var/backups/industrial-certificate-assistant/."
 read -r -p "Type REMOVE to continue: " confirm
-[[ \"$confirm\" == "REMOVE" ]] || { echo "Cancelled."; exit 1; }
+[[ "$confirm" == "REMOVE" ]] || { echo "Cancelled."; exit 1; }
 
-rm -f "$TLS_CONF_DEST"
-rm -f "$CERTS_DIR/broker-certificate.pem" "$CERTS_DIR/broker-fullchain.pem" "$CERTS_DIR/ca-chain.pem" "$CERTS_DIR/root-ca.pem" "$CERTS_DIR/broker-private-key.pem"
-
-latest_conf_backup="$(ls -1t "$BACKUP_DIR"/mosquitto.conf.*.bak 2>/dev/null | head -n 1 || true)"
-if [[ -n "$latest_conf_backup" ]]; then
-  cp -a "$latest_conf_backup" /etc/mosquitto/mosquitto.conf
-fi
-
-latest_tls_backup="$(ls -1t "$BACKUP_DIR"/industrial-mqtt-tls.conf.*.bak 2>/dev/null | head -n 1 || true)"
-if [[ -n "$latest_tls_backup" ]]; then
-  cp -a "$latest_tls_backup" "$TLS_CONF_DEST"
-fi
-
-mosquitto -c /etc/mosquitto/mosquitto.conf -v -d
-pkill -f "mosquitto -c /etc/mosquitto/mosquitto.conf -v -d" >/dev/null 2>&1 || true
-
-systemctl restart mosquitto
-systemctl --no-pager --full status mosquitto | sed -n '1,10p'
-
-echo "Mosquitto TLS rollback completed."
-"""
+rm -f "$TLS_CONF_DEST" "$CERTS_DIR/broker-fullchain.pem" "$CERTS_DIR/broker-private-key.pem" "$CERTS_DIR/ca-chain.pem"
+systemctl restart "$SERVICE"
+systemctl --no-pager --full status "$SERVICE" | sed -n '1,10p'
+echo "Mosquitto TLS listener removed."
+'''
 
 
-def _verify_script() -> str:
-    return """#!/usr/bin/env bash
+_VERIFY_SCRIPT = r'''#!/usr/bin/env bash
+# Verifies the Mosquitto TLS listener from a client machine.
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
@@ -218,7 +234,7 @@ sleep 1
 mosquitto_pub -h "$HOST" -p "$PORT" --cafile "$CAFILE" -t "$topic" -m "ica-verify" ${CLIENT_CERT:+--cert "$CLIENT_CERT"} ${CLIENT_KEY:+--key "$CLIENT_KEY"}
 wait "$sub_pid"
 cat "$TMPDIR/sub.txt"
-"""
+'''
 
 
 def create_mqtt_broker_bundle(destination: Path, mutual_tls: bool = False) -> dict[str, Path]:
@@ -228,10 +244,10 @@ def create_mqtt_broker_bundle(destination: Path, mutual_tls: bool = False) -> di
         "mosquitto_remove": destination / "remove-mosquitto-tls.sh",
         "mosquitto_verify": destination / "verify-mqtt-tls.sh",
     }
-    scripts["mosquitto_conf"].write_text(render_mosquitto_tls_config(mutual_tls), encoding="utf-8")
-    scripts["mosquitto_install"].write_text(_install_script(), encoding="utf-8")
-    scripts["mosquitto_remove"].write_text(_remove_script(), encoding="utf-8")
-    scripts["mosquitto_verify"].write_text(_verify_script(), encoding="utf-8")
+    scripts["mosquitto_conf"].write_text(render_mosquitto_tls_config(mutual_tls), encoding="utf-8", newline="\n")
+    scripts["mosquitto_install"].write_text(_INSTALL_SCRIPT, encoding="utf-8", newline="\n")
+    scripts["mosquitto_remove"].write_text(_REMOVE_SCRIPT, encoding="utf-8", newline="\n")
+    scripts["mosquitto_verify"].write_text(_VERIFY_SCRIPT, encoding="utf-8", newline="\n")
     scripts["mosquitto_install"].chmod(0o755)
     scripts["mosquitto_remove"].chmod(0o755)
     scripts["mosquitto_verify"].chmod(0o755)

@@ -22,7 +22,7 @@ class CertificateProfile:
 PROFILES = {
     "flexedge_https": CertificateProfile(
         key="flexedge_https",
-        title="FlexEdge HTTPS server",
+        title="Crimson 3.2 HTTPS Server",
         description="Identifies a FlexEdge system or Crimson runtime web server.",
         extended_key_usage=("serverAuth",),
         key_usage=("digitalSignature", "keyEncipherment"),
@@ -48,8 +48,6 @@ PROFILES = {
         leaf_key_size_or_curve="RSA 2048",
         leaf_digest="SHA-256",
     ),
-    # The UI exposes only FlexEdge in the first milestone. These definitions
-    # establish the extension point for the next protocol workflows.
     "mqtt_broker": CertificateProfile(
         key="mqtt_broker",
         title="MQTT broker",

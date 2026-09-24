@@ -4,6 +4,25 @@ Cross-platform guided PKI utility for industrial HTTPS, MQTT, and OPC UA
 certificate profiles. Cryptographic operations are performed by OpenSSL;
 the desktop interface is built with Python and PySide6.
 
+## Unreleased: HiveMQ mutual TLS and package layout
+
+- Every certificate package now has `README.txt`, `deploy/`, `trust/`, and
+  `records/` (see "Automated project layout" below), so it is clear which
+  files go to the device and which stay with you.
+- Every profile has its own `<product>/<role>/<name>` folder. Crimson and RAM
+  packages move from `devices/` to `crimson/servers/` and `ram/servers/`.
+
+- MQTT Broker issuance offers **Broker software: Mosquitto / HiveMQ**. HiveMQ
+  packages contain `hivemq-keystore.p12`, `hivemq-truststore.p12` (mutual TLS
+  only), `hivemq-config.xml`, and `install-hivemq-tls.sh` in `deploy/`, and
+  `verify-hivemq-tls.sh` in `trust/`.
+- Validated against HiveMQ CE (Podman). A client certificate from the
+  project is accepted. No certificate, a foreign-CA certificate, or a
+  serverAuth-only certificate is rejected.
+- HiveMQ CE checks that client certificates are valid but does not
+  authorize per certificate. Tying Client IDs or topics to the certificate
+  requires the HiveMQ Enterprise Security Extension or a custom extension.
+
 ## Version 0.9.3 milestone
 
 - Added the SixView Manager HTTPS Server profile with RSA, `serverAuth`,
@@ -202,19 +221,40 @@ Industrial_Certs/
 ├── root-ca/
 ├── intermediate-ca/
 ├── pending-requests/
-├── devices/
+├── crimson/
+│   └── servers/          Crimson 3.2 HTTPS
+├── ram/
+│   └── servers/          Red Lion RAM HTTPS
+├── svm/
+│   └── servers/          SixView Manager HTTPS
 ├── mqtt/
-│   ├── brokers/
+│   ├── brokers/          Mosquitto and HiveMQ
 │   └── clients/
 ├── opcua/
 │   ├── servers/
 │   └── clients/
-├── svm/
-│   └── servers/
-├── trust-installers/
-├── backups/
-└── reports/
+└── trust-installers/     root/issuing CA trust installers for the whole project
 ```
+
+Every certificate package has the same layout:
+
+```text
+<package>/
+├── README.txt   start here: what the package is and what to copy where
+├── deploy/      copy to the device, server, or broker (contains the private key)
+├── trust/       CA certificates, trust installers, and verify scripts for the
+│                computers and clients that connect to it
+├── records/     CSR, extensions, validation report, and ica-package.json
+│                (profile, identity, serial, expiry); never deployed
+└── archive/     earlier issuances, moved aside on reissue
+```
+
+Packages created by earlier versions (all files at the top level) can still be
+reissued and imported. Earlier projects kept Crimson and RAM packages in
+`devices/<name>`. When such a device is issued again, ICA moves its package to
+`crimson/servers/<name>` or `ram/servers/<name>` and archives it there, so
+nothing is left behind in `devices/`. The Issue preview says when this will
+happen, and a package of a different profile is never moved.
 
 Passwords are never stored in `ica-project.json`.
 

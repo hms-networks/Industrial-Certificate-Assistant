@@ -28,7 +28,7 @@ Validate end-to-end MQTT TLS certificate generation and broker packaging in Indu
 3. Include all required DNS/IP SAN entries.
 4. Export broker package artifacts.
 5. Transfer package to broker host.
-6. Run `install-mosquitto-tls.sh` as root.
+6. Run `deploy/install-mosquitto-tls.sh` as root.
 7. Validate listener and certificate presentation on port 8883.
 
 ## Mutual-TLS Procedure
@@ -136,7 +136,7 @@ mosquitto_pub -h <broker-host> -p 8883 --cafile root-ca.pem --cert client-certif
 | Symptom | Probable Cause | Check | Fix |
 | --- | --- | --- | --- |
 | TLS handshake fails | SAN mismatch | Compare client endpoint vs cert SANs | Reissue with correct SANs |
-| Broker fails to restart | Invalid mosquitto config | `mosquitto -c /etc/mosquitto/mosquitto.conf -v` | Restore backup, fix fragment |
+| Broker fails to restart | Invalid mosquitto config | `journalctl -u mosquitto`; on Mosquitto 2.1+ `mosquitto -c /etc/mosquitto/mosquitto.conf --test-config` | Run the backup's `rollback.sh`, fix the fragment |
 | Client rejected in mTLS mode | Missing client cert or wrong CA | Broker logs and verify client chain | Reissue client cert and trust chain |
 | Chain validation fails | Wrong CA file order | Inspect `ca-chain.pem` ordering | Rebuild chain as intermediate then root |
 | Connection intermittently fails by public IP | Address changed | DNS/IP mapping checks | Use stable DNS/Elastic IP |

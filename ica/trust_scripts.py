@@ -9,8 +9,8 @@ from pathlib import Path
 WINDOWS_INSTALL = r'''# Run in PowerShell. Administrative approval is required.
 $ErrorActionPreference = "Stop"
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Root = Join-Path $Here "root-ca.cert.pem"
-$Intermediate = Join-Path $Here "intermediate-ca.cert.pem"
+$Root = Join-Path $Here "root-ca.pem"
+$Intermediate = Join-Path $Here "intermediate-ca.pem"
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
   Write-Error "Administrator privileges are required before modifying the Local Computer certificate stores. Rerun PowerShell as Administrator."
@@ -31,7 +31,7 @@ Write-Host "Certificate trust installed successfully. Restart all browsers."
 WINDOWS_REMOVE = r'''# Run in PowerShell. Administrative approval is required.
 $ErrorActionPreference = "Stop"
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
-foreach ($item in @(@("root-ca.cert.pem", "Root"), @("intermediate-ca.cert.pem", "CA"))) {
+foreach ($item in @(@("root-ca.pem", "Root"), @("intermediate-ca.pem", "CA"))) {
     $path = Join-Path $Here $item[0]
     if (Test-Path $path) {
         $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($path)
@@ -45,8 +45,8 @@ Write-Host "Certificate trust removed. Restart all browsers."
 LINUX_INSTALL = r'''#!/usr/bin/env bash
 set -euo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$HERE/root-ca.cert.pem"
-INTERMEDIATE="$HERE/intermediate-ca.cert.pem"
+ROOT="$HERE/root-ca.pem"
+INTERMEDIATE="$HERE/intermediate-ca.pem"
 openssl x509 -in "$ROOT" -noout -subject -issuer -fingerprint -sha256
 read -r -p "Install this root CA system-wide? Type INSTALL to continue: " answer
 [[ "$answer" == "INSTALL" ]] || { echo "Installation cancelled."; exit 1; }
@@ -81,10 +81,10 @@ echo "Certificate trust removed. Restart all browsers."
 
 def create_trust_bundle(destination: Path, root_certificate: Path, intermediate_certificate: Path | None = None) -> dict[str, Path]:
     destination.mkdir(parents=True, exist_ok=True)
-    root_out = destination / "root-ca.cert.pem"
+    root_out = destination / "root-ca.pem"
     root_out.write_bytes(root_certificate.read_bytes())
     if intermediate_certificate:
-        (destination / "intermediate-ca.cert.pem").write_bytes(intermediate_certificate.read_bytes())
+        (destination / "intermediate-ca.pem").write_bytes(intermediate_certificate.read_bytes())
     scripts = {
         "windows_install": destination / "install-trust-windows.ps1",
         "windows_remove": destination / "remove-trust-windows.ps1",

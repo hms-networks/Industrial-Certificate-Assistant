@@ -152,6 +152,6 @@ printf 'Retain this backup until SVM has been tested by DNS name and IP address.
 
 def write_svm_deploy_script(output: Path) -> Path:
     path = output / "deploy-svm-certificate.sh"
-    path.write_text(DEPLOY_SCRIPT, encoding="utf-8")
+    path.write_text(DEPLOY_SCRIPT, encoding="utf-8", newline="\n")
     path.chmod(0o755)
     return path

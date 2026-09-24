@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (QApplication, QFileDialog, QFormLayout, QHBoxLayo
 
 from ica.openssl_engine import OpenSSLEngine, OpenSSLError, Subject, is_encrypted_private_key
 from ica.project import Project, safe_name
+from ica.package_layout import find_package_file
 from ica.trust_scripts import create_trust_bundle
 from app_version import APP_VERSION as __version__
 
@@ -31,6 +32,8 @@ ISSUE_PROFILE_TITLES = (
     "OPC UA Server",
     "OPC UA Client",
 )
+
+MQTT_BROKER_SOFTWARE = ("Mosquitto", "HiveMQ")
 
 IMPORT_PACKAGE_TITLES = (
     "Crimson HTTPS package",
@@ -437,12 +440,9 @@ class MainWindow(QMainWindow):
 
     def load_existing_svm_package(self, value: str | Path):
         folder = Path(value)
-        required = {
-            self.icert: folder / "certificate.pem",
-            self.ikey: folder / "private-key.pem",
-            self.ica: folder / "ca-chain.pem",
-        }
-        missing = [path.name for path in required.values() if not path.is_file()]
+        required = {self.icert: "certificate.pem", self.ikey: "private-key.pem", self.ica: "ca-chain.pem"}
+        found = {field: find_package_file(folder, name) for field, name in required.items()}
+        missing = [required[field] for field, path in found.items() if path is None]
         if missing:
             QMessageBox.warning(
                 self, "Incomplete SVM package",
@@ -450,13 +450,11 @@ class MainWindow(QMainWindow):
                 + ", ".join(missing))
             return
         self.import_profile.setCurrentText("SixView Manager HTTPS Server package")
-        for field, path in required.items():
+        for field, path in found.items():
             field.setText(str(path))
-        for name in ("server.csr", "request.csr.pem"):
-            candidate = folder / name
-            if candidate.is_file():
-                self.icsr.setText(str(candidate))
-                break
+        csr = find_package_file(folder, "server.csr") or find_package_file(folder, "request.csr.pem")
+        if csr:
+            self.icsr.setText(str(csr))
         else:
             self.icsr.clear()
         self.iimportout.setText(str(folder.with_name(folder.name + "-deployment")))
@@ -563,7 +561,8 @@ class MainWindow(QMainWindow):
         self.issue_protocol = QComboBox()
         self.issue_protocol.addItems(ISSUE_PROFILE_TITLES)
         self.mqtt_role = QComboBox(); self.mqtt_role.addItems(["Broker", "Client/Device"])
-        self.ram_reissue = QComboBox(); self.ram_reissue.addItems([
+        self.mqtt_broker_software = QComboBox(); self.mqtt_broker_software.addItems(MQTT_BROKER_SOFTWARE)
+        self.issue_reissue_mode = QComboBox(); self.issue_reissue_mode.addItems([
             "New issuance",
             "Reissue using existing private key",
             "Reissue with new private key",
@@ -597,7 +596,8 @@ class MainWindow(QMainWindow):
         self.set_help(self.iout, "Auto-generated output folder for the device package.")
         self.set_help(self.icapass, "Password for encrypted CA keys. Leave blank only for unencrypted CA keys.")
         self.set_help(self.issue_days, "Issued certificate validity period in days.")
-        self.set_help(self.mqtt_mutual_tls, "Mutual TLS authenticates both sides. Never upload CA private keys to Mosquitto or industrial devices.")
+        self.set_help(self.mqtt_broker_software, "Broker product to package for. Mosquitto uses PEM files; HiveMQ is Java-based and uses password-protected PKCS#12 keystore and truststore files.")
+        self.set_help(self.mqtt_mutual_tls, "Mutual TLS authenticates both sides: the broker rejects clients without a certificate issued by this PKI. Never upload CA private keys to the broker or industrial devices.")
         self.set_help(self.export_pfx, "Bundles the issued certificate, private key, and CA chain into a single password-protected .pfx file, for applications such as Kepware that import PKCS#12 instead of separate PEM files.")
         self.set_help(self.pfx_pass, "Password that protects the .pfx bundle. Required when the .pfx export is enabled.")
         self.set_help(self.pfx_pass_confirm, "Re-enter the .pfx password to confirm it.")
@@ -607,13 +607,15 @@ class MainWindow(QMainWindow):
         self.issue_protocol.currentTextChanged.connect(self.update_issue_defaults)
         self.issue_protocol.currentTextChanged.connect(self.update_issue_mode)
         self.mqtt_role.currentTextChanged.connect(self.sync_issue_protocol_from_role)
-        self.ram_reissue.currentTextChanged.connect(self.update_issue_preview)
+        self.issue_reissue_mode.currentTextChanged.connect(self.update_issue_preview)
         self.issue_days.valueChanged.connect(self.update_issue_preview)
         self.mqtt_mutual_tls.toggled.connect(self.update_issue_preview)
+        self.mqtt_broker_software.currentTextChanged.connect(lambda _: self.update_issue_mode())
 
         form.addRow("PKI project workspace", wsw)
         form.addRow("Protocol/Profile", self.issue_protocol)
         form.addRow("MQTT Role", self.mqtt_role)
+        form.addRow("Broker software", self.mqtt_broker_software)
         form.addRow("Device/Broker name", self.idevice)
         form.addRow("MQTT Client ID", self.iclientid)
         form.addRow("OPC UA Application URI", self.iapplication_uri)
@@ -653,10 +655,10 @@ class MainWindow(QMainWindow):
             "Public IPs can change; use stable DNS when possible. Restrict port 8883 to approved sources and do not expose port 1883 publicly."
         )
         note.setWordWrap(True); form.addRow(note)
+        self.set_help(self.issue_reissue_mode, "When this device already has a package: reuse its existing private key, or rotate to a new key. Either way the previous package is archived automatically.")
+        form.addRow("Issuance mode", self.issue_reissue_mode)
         self.issue_action = self.primary_button("Issue protocol certificate package", self.issue)
         form.addRow(self.issue_action)
-        self.set_help(self.ram_reissue, "Choose whether to create a new HTTPS package, reuse its existing server key, or rotate the key. Previous issuance files are archived automatically.")
-        form.addRow("Issuance mode", self.ram_reissue)
         self.issue_form = form
         self.update_issue_mode()
         return page
@@ -836,8 +838,30 @@ class MainWindow(QMainWindow):
             return "opcua", "client"
         return "crimson", "server"
 
+    # Profiles whose packages used to live in devices/<name>.
+    _LEGACY_DEVICE_PROFILES = {"crimson": "flexedge_https", "ram": "ram_https"}
+
+    def _legacy_package_to_adopt(self) -> Path | None:
+        mode, _ = self._selected_issue_mode()
+        name = self.idevice.text().strip()
+        if not self.project or mode not in self._LEGACY_DEVICE_PROFILES or not name:
+            return None
+        try:
+            return self.project.legacy_package_to_adopt(name, self._LEGACY_DEVICE_PROFILES[mode])
+        except ValueError:
+            return None
+
+    def _adopt_legacy_package(self, mode: str) -> None:
+        moved = self.project.adopt_legacy_package(
+            self.idevice.text().strip(), self._LEGACY_DEVICE_PROFILES[mode], Path(self.iout.text()))
+        if moved:
+            self.log.append(f"Moved the earlier devices/ package to {moved} before reissuing.")
+
+    def _is_hivemq_broker(self) -> bool:
+        return self._selected_issue_mode() == ("mqtt", "broker") and self.mqtt_broker_software.currentText() == "HiveMQ"
+
     def _selected_reissue_mode(self) -> str:
-        selected = self.ram_reissue.currentText()
+        selected = self.issue_reissue_mode.currentText()
         if selected == "Reissue using existing private key":
             return "existing"
         return "new"
@@ -863,7 +887,7 @@ class MainWindow(QMainWindow):
                 self.mqtt_role.setCurrentText("Client/Device")
 
         self._set_row_visible(self.mqtt_role, is_mqtt)
-        self._set_row_visible(self.ram_reissue, mode in {"ram", "svm"})
+        self._set_row_visible(self.issue_reissue_mode, True)
         self._set_row_visible(self.iclientid, is_mqtt_client)
         self._set_row_visible(self.iapplication_uri, is_opcua)
         self._set_row_visible(self.icn_override, is_mqtt or is_opcua)
@@ -874,14 +898,22 @@ class MainWindow(QMainWindow):
         self._set_row_visible(self.issue_keycontrols, protects_key and self.issue_keyprotect.isChecked())
         self._set_row_visible(self.issue_days, True)
         self.mqtt_mutual_tls.setVisible(is_mqtt and role == "broker")
+        self._set_row_visible(self.mqtt_broker_software, is_mqtt and role == "broker")
+        is_hivemq = self._is_hivemq_broker()
         is_opcua_server = is_opcua and role == "server"
         self.export_pfx.setVisible(is_opcua_server)
         if not is_opcua_server and self.export_pfx.isChecked():
             with QSignalBlocker(self.export_pfx):
                 self.export_pfx.setChecked(False)
-        pfx_fields_visible = is_opcua_server and self.export_pfx.isChecked()
+        # The PKCS#12 password rows double as the HiveMQ keystore password.
+        pfx_fields_visible = (is_opcua_server and self.export_pfx.isChecked()) or is_hivemq
         self._set_row_visible(self.pfx_row, pfx_fields_visible)
         self._set_row_visible(self.pfx_pass_confirm, pfx_fields_visible)
+        for field, text in ((self.pfx_row, "HiveMQ keystore password" if is_hivemq else ".pfx password"),
+                            (self.pfx_pass_confirm, "Confirm keystore password" if is_hivemq else "Confirm .pfx password")):
+            label = self.issue_form.labelForField(field)
+            if label is not None:
+                label.setText(text)
         if not pfx_fields_visible:
             self.pfx_pass.clear(); self.pfx_pass_confirm.clear()
         self._set_row_visible(self.idns, True)
@@ -921,14 +953,14 @@ class MainWindow(QMainWindow):
                 host = name if "." in name else f"{name}.{suffix}"
                 values.append(host.lower())
                 cn_value = host.lower()
-                output = self.project.device_folder(name)
+                output = self.project.crimson_server_folder(name)
         elif mode == "ram":
             if name:
                 cn_value = self.icn_override.text().strip() or name
-                output = self.project.device_folder(name)
+                output = self.project.ram_server_folder(name)
             else:
                 cn_value = self.icn_override.text().strip()
-                output = self.project.path / "devices"
+                output = self.project.path / "ram" / "servers"
             if dns_name:
                 values.append(dns_name)
         elif mode == "svm":
@@ -1017,110 +1049,87 @@ class MainWindow(QMainWindow):
             return
         mode, role = self._selected_issue_mode() if hasattr(self, "issue_protocol") else ("crimson", "server")
         out = self.iout.text().strip() if hasattr(self, "iout") else "<output-folder>"
-        if not out:
-            out = "<output-folder>"
-        base = Path(out)
+        base = Path(out or "<output-folder>")
 
+        trust = ["root-ca.pem", "intermediate-ca.pem", "ca-chain.pem",
+                 "install-trust-windows.ps1", "remove-trust-windows.ps1",
+                 "install-trust-linux.sh", "remove-trust-linux.sh"]
+        records = ["request.csr.pem", "certificate.ext", "certificate-report.txt"]
+        notes: list[str] = []
         if mode == "crimson":
-            files = [
-                "certificate.pem",
-                "private-key.pem",
-                "fullchain.pem",
-                "ca-chain.pem",
-                "intermediate-ca.pem",
-                "root-ca.pem",
-                "certificate.ext",
-                "request.csr.pem",
-                "certificate-report.txt",
-                "trust-installers/install-trust-windows.ps1",
-                "trust-installers/remove-trust-windows.ps1",
-                "trust-installers/install-trust-linux.sh",
-                "trust-installers/remove-trust-linux.sh",
-            ]
             header = "Crimson 3.2 HTTPS package preview"
+            deploy = ["certificate.pem", "private-key.pem", "fullchain.pem"]
         elif mode == "ram":
-            files = [
-                "certificate.pem", "private-key.pem", "private-key-rsa.pem",
-                "intermediate-ca.pem", "root-ca.pem", "ca-chain.pem", "fullchain.pem",
-                "ram-https.pem", "lighttpd-gau.pem", "request.csr.pem", "certificate.ext",
-                "certificate-report.txt", "README-RAM-HTTPS.txt",
-                "trust-installers/install-trust-windows.ps1",
-            ]
             header = "Red Lion RAM HTTPS deployment package preview (RSA 2048 / SHA-256)"
+            deploy = ["ram-https.pem  (upload this to the RAM)", "lighttpd-gau.pem", "certificate.pem",
+                      "private-key.pem", "private-key-rsa.pem", "fullchain.pem"]
         elif mode == "svm":
-            files = [
-                "certificate.pem", "private-key.pem", "private-key-rsa.pem",
-                "ca-chain.pem", "fullchain.pem", "server.crt", "server.key",
-                "server.csr", "certificate-report.txt", "installation-guide.txt",
-                "deploy-svm-certificate.sh",
-            ]
             header = "SixView Manager HTTPS deployment package preview (RSA 2048 / SHA-256)"
+            deploy = ["server.crt", "server.key", "deploy-svm-certificate.sh", "certificate.pem",
+                      "private-key.pem", "private-key-rsa.pem", "fullchain.pem"]
+            records = ["server.csr", "certificate.ext", "certificate-report.txt"]
         elif mode == "opcua":
             prefix = "client" if role == "client" else "server"
-            files = [
-                f"{prefix}-certificate.pem", f"{prefix}-certificate.der",
-                f"{prefix}-private-key.pem", f"{prefix}-fullchain.pem",
-                "ca-chain.pem", "intermediate-ca.pem", "root-ca.pem",
-                f"{prefix}-certificate.ext", f"{prefix}-request.csr.pem",
-                "certificate-report.txt", "OPC-UA-INSTALLATION.txt",
-                "opcua-trust/trusted/certs/root-ca.der",
-                "opcua-trust/issuers/certs/intermediate-ca.der",
-                "opcua-trust/issuers/crl/intermediate-ca.crl.pem",
-                "opcua-trust/issuers/crl/intermediate-ca.crl.der",
-            ]
-            if role == "server" and self.export_pfx.isChecked():
-                files.append(f"{prefix}-certificate.pfx")
             header = f"OPC UA {prefix} package preview ({self.iapplication_uri.text().strip() or 'Application URI required'})"
+            deploy = [f"{prefix}-certificate.pem", f"{prefix}-certificate.der",
+                      f"{prefix}-private-key.pem", f"{prefix}-fullchain.pem",
+                      "opcua-trust/trusted/certs/root-ca.der",
+                      "opcua-trust/issuers/certs/intermediate-ca.der",
+                      "opcua-trust/issuers/crl/intermediate-ca.crl.pem",
+                      "opcua-trust/issuers/crl/intermediate-ca.crl.der"]
+            if role == "server" and self.export_pfx.isChecked():
+                deploy.append(f"{prefix}-certificate.pfx")
+            records = [f"{prefix}-request.csr.pem", f"{prefix}-certificate.ext", "certificate-report.txt"]
+        elif role == "broker" and self._is_hivemq_broker():
+            mtls = self.mqtt_mutual_tls.isChecked()
+            header = ("HiveMQ broker package preview (mutual TLS enabled: client certificate REQUIRED)"
+                      if mtls else "HiveMQ broker package preview (mutual TLS disabled)")
+            deploy = ["install-hivemq-tls.sh", "hivemq-config.xml", "hivemq-keystore.p12",
+                      *(["hivemq-truststore.p12"] if mtls else []),
+                      "broker-certificate.pem", "broker-private-key.pem", "broker-fullchain.pem"]
+            trust.append("verify-hivemq-tls.sh")
+            records = ["broker-request.csr.pem", "broker-certificate.ext", "certificate-report.txt"]
+            notes = [
+                "Root and intermediate CA private keys are never copied to HiveMQ.",
+                "The keystore password is not saved; HiveMQ reads it from HIVEMQ_TLS_KEYSTORE_PASSWORD.",
+                "Issue each connecting device with the MQTT Client/Device profile in this project.",
+                "HiveMQ CE checks that client certificates are valid; per-client authorization needs an extension.",
+                "Port 1883 should not be publicly exposed.",
+            ]
         elif role == "broker":
-            files = [
-                "broker-certificate.pem",
-                "broker-private-key.pem",
-                "broker-fullchain.pem",
-                "ca-chain.pem",
-                "intermediate-ca.pem",
-                "root-ca.pem",
-                "broker-certificate.ext",
-                "broker-request.csr.pem",
-                "certificate-report.txt",
-                "mosquitto-tls.conf",
-                "install-mosquitto-tls.sh",
-                "remove-mosquitto-tls.sh",
-                "verify-mqtt-tls.sh",
-                "trust-installers/install-trust-windows.ps1",
-                "trust-installers/remove-trust-windows.ps1",
-                "trust-installers/install-trust-linux.sh",
-                "trust-installers/remove-trust-linux.sh",
-            ]
             mtls = "enabled" if self.mqtt_mutual_tls.isChecked() else "disabled"
-            header = f"MQTT broker package preview (mutual TLS {mtls})"
-        else:
-            files = [
-                "client-certificate.pem",
-                "client-private-key.pem",
-                "client-fullchain.pem",
-                "ca-chain.pem",
-                "intermediate-ca.pem",
-                "root-ca.pem",
-                "client-certificate.ext",
-                "client-request.csr.pem",
-                "certificate-report.txt",
-                "trust-installers/install-trust-windows.ps1",
-                "trust-installers/remove-trust-windows.ps1",
-                "trust-installers/install-trust-linux.sh",
-                "trust-installers/remove-trust-linux.sh",
+            header = f"Mosquitto broker package preview (mutual TLS {mtls})"
+            deploy = ["install-mosquitto-tls.sh", "remove-mosquitto-tls.sh", "mosquitto-tls.conf",
+                      "broker-certificate.pem", "broker-private-key.pem", "broker-fullchain.pem",
+                      "ca-chain.pem"]
+            trust.append("verify-mqtt-tls.sh")
+            records = ["broker-request.csr.pem", "broker-certificate.ext", "certificate-report.txt"]
+            notes = [
+                "Root and intermediate CA private keys are never copied to Mosquitto.",
+                "Generated TLS fragment sets listener 8883 and allow_anonymous false.",
+                "Mosquitto cannot use an encrypted broker key under systemd; the installer refuses one.",
+                "Port 1883 should not be publicly exposed.",
             ]
+        else:
             header = "MQTT client/device package preview"
+            deploy = ["client-certificate.pem", "client-private-key.pem", "client-fullchain.pem",
+                      "root-ca.pem  (to verify the broker)"]
+            records = ["client-request.csr.pem", "client-certificate.ext", "certificate-report.txt"]
 
-        lines = [header, f"Output: {base}", "", "Files:"]
-        lines.extend(f"- {base / name}" for name in files)
-        if mode == "mqtt" and role == "broker":
-            lines.extend([
-                "",
-                "Safety notes:",
-                "- Root and intermediate CA private keys are never copied to Mosquitto.",
-                "- Generated TLS fragment sets listener 8883 and allow_anonymous false.",
-                "- Port 1883 should not be publicly exposed.",
-            ])
+        legacy = self._legacy_package_to_adopt()
+        if legacy is not None:
+            header += (f"\n\nAn earlier package for this device is in {legacy}. Issuing moves it to "
+                       "the output folder below and archives it there, as for any reissue.")
+        lines = [header, f"Output: {base}", "",
+                 "README.txt   start here: what this package is and what to copy where"]
+        for folder, purpose, names in (
+                ("deploy", "copy to the device/server/broker (contains the private key)", deploy),
+                ("trust", "for the computers and clients that connect to it", trust),
+                ("records", "ICA records for this issuance; never deployed", records)):
+            lines += ["", f"{folder}/   {purpose}"]
+            lines += [f"  {name}" for name in names]
+        if notes:
+            lines += ["", "Safety notes:"] + [f"- {note}" for note in notes]
         self.issue_preview.setPlainText("\n".join(lines))
 
     def guard(self, action):
@@ -1252,6 +1261,7 @@ class MainWindow(QMainWindow):
                     raise ValueError("Device name is required for the Red Lion RAM HTTPS profile.")
                 if not sans_values:
                     raise ValueError("Provide at least one explicit DNS name or IP address for the RAM HTTPS certificate.")
+                self._adopt_legacy_package(mode)
                 return self.engine.issue_ram_https(
                     self.project.path, Path(self.iout.text()),
                     Subject(self.icn.text(), self.project.organization), sans_values,
@@ -1260,7 +1270,7 @@ class MainWindow(QMainWindow):
                         "New issuance": "new",
                         "Reissue using existing private key": "existing",
                         "Reissue with new private key": "new",
-                    }[self.ram_reissue.currentText()],
+                    }[self.issue_reissue_mode.currentText()],
                 )
             if mode == "svm":
                 if not self.idevice.text().strip():
@@ -1279,6 +1289,7 @@ class MainWindow(QMainWindow):
             if mode == "crimson":
                 if not self.iip.text().strip():
                     raise ValueError("Device IP address is required for the Crimson HTTPS profile.")
+                self._adopt_legacy_package(mode)
                 return self.engine.issue_server(
                     self.project.path,
                     Path(self.iout.text()),
@@ -1302,6 +1313,24 @@ class MainWindow(QMainWindow):
             if role == "broker":
                 if not sans_values:
                     raise ValueError("Provide at least one DNS name or IP address for the MQTT broker certificate SAN list.")
+                if self._is_hivemq_broker():
+                    if self.pfx_pass.text() != self.pfx_pass_confirm.text():
+                        raise ValueError("The HiveMQ keystore passwords do not match.")
+                    return self.engine.issue_hivemq_broker(
+                        self.project.path,
+                        Path(self.iout.text()),
+                        Subject(self.icn.text(), self.project.organization),
+                        sans_values,
+                        ca_password,
+                        key_password,
+                        keystore_password=self.pfx_pass.text(),
+                        mutual_tls=self.mqtt_mutual_tls.isChecked(),
+                        days=int(self.issue_days.value()),
+                        digest=self.project.pki_digest,
+                        key_type=self.project.pki_key_type,
+                        key_size_or_curve=self.project.pki_key_size_or_curve,
+                        reissue=self._selected_reissue_mode(),
+                    )
                 return self.engine.issue_mqtt_broker(
                     self.project.path,
                     Path(self.iout.text()),

@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+
+from .package_layout import package_profile
 
 
 MANIFEST_NAME = "ica-project.json"
@@ -45,9 +48,9 @@ class Project:
     def create_structure(self) -> None:
         for relative in (
             "root-ca/certs", "root-ca/private", "intermediate-ca/certs",
-            "intermediate-ca/private", "devices", "pending-requests",
-            "trust-installers", "backups", "reports", "mqtt/brokers",
-            "mqtt/clients", "opcua/servers", "opcua/clients", "svm/servers",
+            "intermediate-ca/private", "pending-requests", "trust-installers",
+            "crimson/servers", "ram/servers", "svm/servers", "mqtt/brokers",
+            "mqtt/clients", "opcua/servers", "opcua/clients",
         ):
             (self.path / relative).mkdir(parents=True, exist_ok=True)
 
@@ -68,8 +71,44 @@ class Project:
         data["version"] = 2
         return cls(**data)
 
-    def device_folder(self, device_name: str) -> Path:
+    def legacy_device_folder(self, device_name: str) -> Path:
+        """Crimson and RAM packages lived in devices/<name> before each
+        profile had its own folder. Read-only: nothing new is written here."""
         return self.path / "devices" / safe_name(device_name)
+
+    def crimson_server_folder(self, name: str) -> Path:
+        return self.path / "crimson" / "servers" / safe_name(name)
+
+    def ram_server_folder(self, name: str) -> Path:
+        return self.path / "ram" / "servers" / safe_name(name)
+
+    def legacy_package_to_adopt(self, name: str, profile: str) -> Path | None:
+        """The devices/<name> package that issuing `profile` under `name` would
+        adopt, or None. Only a package of the same profile is adopted."""
+        legacy = self.legacy_device_folder(name)
+        if not legacy.is_dir() or package_profile(legacy) != profile:
+            return None
+        return legacy
+
+    def adopt_legacy_package(self, name: str, profile: str, destination: Path) -> Path | None:
+        """Move devices/<name> to `destination` when it holds a `profile`
+        package and `destination` does not exist yet, so a reissue archives
+        the old identity in its new home instead of leaving it behind."""
+        legacy = self.legacy_package_to_adopt(name, profile)
+        if legacy is None:
+            return None
+        if destination.exists() and any(destination.iterdir()):
+            raise FileExistsError(
+                f"Both {legacy} and {destination} contain a package for {name}. "
+                "Move or remove one of them before issuing.")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            destination.rmdir()
+        shutil.move(str(legacy), destination)
+        devices = legacy.parent
+        if devices.is_dir() and not any(devices.iterdir()):
+            devices.rmdir()
+        return destination
 
     def pending_folder(self, request_name: str) -> Path:
         return self.path / "pending-requests" / safe_name(request_name)
