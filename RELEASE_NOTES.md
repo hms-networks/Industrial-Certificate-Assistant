@@ -1,4 +1,4 @@
-# Unreleased
+# Version 0.10.0
 
 - Added HiveMQ as an MQTT Broker software option, with server-authenticated
   TLS or mutual TLS (`client-authentication-mode` REQUIRED).
