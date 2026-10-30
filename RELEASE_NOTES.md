@@ -1,3 +1,17 @@
+# Version 0.10.3
+
+- Fixed OPC UA server and client certificate profiles to include
+  `nonRepudiation` and `dataEncipherment` in addition to `digitalSignature`
+  and `keyEncipherment`. Strict OPC UA validators otherwise reject the
+  certificate with `BadCertificateUseNotAllowed`.
+
+# Version 0.10.2
+
+- Fixed OPC UA certificate issuance treating a complete Primary DNS name as a
+  suffix and appending it to the device name. Explicit DNS names now pass
+  through unchanged; the project DNS suffix is used only when the Primary DNS
+  field is empty.
+
 # Version 0.10.1
 
 - Fixed the Linux executable being unable to run the system OpenSSL on
@@ -6,6 +20,9 @@
   every certificate operation failed. The bundled libraries no longer leak into
   the openssl process. Windows builds were not affected. This affected all
   earlier Linux releases.
+- ICA now asks before reopening the last project at startup. The remembered
+  workspace remains available for quick reopening but is no longer loaded
+  without confirmation.
 
 # Version 0.10.0
 

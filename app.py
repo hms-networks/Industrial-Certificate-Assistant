@@ -40,6 +40,18 @@ IMPORT_PACKAGE_TITLES = (
     "SixView Manager HTTPS Server package",
 )
 
+
+def opcua_host(name: str, primary_dns: str, default_suffix: str) -> str:
+    explicit_dns = primary_dns.strip().strip(".").lower()
+    if explicit_dns:
+        return explicit_dns
+    normalized_name = name.strip().strip(".").lower()
+    if not normalized_name or "." in normalized_name:
+        return normalized_name
+    suffix = default_suffix.strip().strip(".").lower()
+    return f"{normalized_name}.{suffix}" if suffix else normalized_name
+
+
 try:
     import pyi_splash
 except Exception:
@@ -365,7 +377,15 @@ class MainWindow(QMainWindow):
         if not workspace:
             return
         if Path(workspace).is_dir():
-            self.load_project(workspace)
+            answer = QMessageBox.question(
+                self,
+                "Reopen previous project",
+                f"Reopen the last ICA project?\n\n{workspace}",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if answer == QMessageBox.Yes:
+                self.load_project(workspace)
         else:
             self.project_status.setText("Previous project is unavailable")
             self.project_status.setStyleSheet("color: #ca8a04")
@@ -969,8 +989,7 @@ class MainWindow(QMainWindow):
             cn_value = dns_name or name
             output = self.project.svm_server_folder(name) if name else self.project.path / "svm" / "servers"
         elif mode == "opcua":
-            suffix = dns_name.strip(".") or self.project.dns_suffix
-            host = (name if "." in name else f"{name}.{suffix}").lower() if name else dns_name
+            host = opcua_host(name, dns_name, self.project.dns_suffix)
             if host:
                 values.append(host)
             cn_value = self.icn_override.text().strip() or host

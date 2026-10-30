@@ -4,10 +4,24 @@ Cross-platform guided PKI utility for industrial HTTPS, MQTT, and OPC UA
 certificate profiles. Cryptographic operations are performed by OpenSSL;
 the desktop interface is built with Python and PySide6.
 
+## Version 0.10.3
+
+- Fixed OPC UA server and client profiles to include the complete RSA
+  application-certificate key usage required by strict OPC UA validators:
+  digital signature, non-repudiation, key encipherment, and data encipherment.
+
+## Version 0.10.2
+
+- Fixed OPC UA certificate issuance duplicating the host name when a complete
+  Primary DNS name was supplied (for example,
+  `ethersloth4.ethersloth4.duckdns.org`).
+
 ## Version 0.10.1
 
 - Fixed the Linux executable failing to run the system OpenSSL on
   distributions with a newer OpenSSL than the build machine (e.g. Fedora).
+- ICA now asks before reopening the last project at startup instead of loading
+  it without confirmation.
 
 ## Version 0.10.0 milestone
 
@@ -268,7 +282,7 @@ Passwords are never stored in `ica-project.json`.
 Copyright 2026 HMS Networks. Licensed under the Apache License 2.0. See
 `LICENSE` and `NOTICE`. OpenSSL redistribution information is documented in
 `THIRD_PARTY_NOTICES.md`.
-Industrial Certificate Assistant build files (version 0.10.1)
+Industrial Certificate Assistant build files (version 0.10.3)
 
 Place these files beside app.py and requirements.txt:
 
@@ -292,10 +306,10 @@ Application version label:
 
   Then use APP_VERSION wherever the GUI displays the release number.
 
-The Windows build embeds 0.10.1.0 in EXE file metadata and bundles VERSION.txt.
+The Windows build embeds 0.10.3.0 in EXE file metadata and bundles VERSION.txt.
 The runtime hook points bundled OpenSSL at its bundled openssl.cnf before app.py starts.
 
-Industrial Certificate Assistant build files (version 0.10.1)
+Industrial Certificate Assistant build files (version 0.10.3)
 
 Place these files beside app.py and requirements.txt:
 
@@ -319,6 +333,6 @@ Application version label:
 
   Then use APP_VERSION wherever the GUI displays the release number.
 
-The Windows build embeds 0.10.1.0 in EXE file metadata and bundles VERSION.txt.
+The Windows build embeds 0.10.3.0 in EXE file metadata and bundles VERSION.txt.
 The runtime hook points bundled OpenSSL at its bundled openssl.cnf before app.py starts.
 When a splash image is present, the builders install Pillow if it is not already available.

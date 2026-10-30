@@ -67,7 +67,7 @@ PROFILES = {
         title="OPC UA server",
         description="Base X.509 identity profile for an OPC UA server.",
         extended_key_usage=("serverAuth", "clientAuth"),
-        key_usage=("digitalSignature", "keyEncipherment"),
+        key_usage=("digitalSignature", "nonRepudiation", "keyEncipherment", "dataEncipherment"),
         default_days=825,
     ),
     "opcua_client": CertificateProfile(
@@ -75,7 +75,7 @@ PROFILES = {
         title="OPC UA client",
         description="Base X.509 identity profile for an OPC UA client application.",
         extended_key_usage=("clientAuth",),
-        key_usage=("digitalSignature", "keyEncipherment"),
+        key_usage=("digitalSignature", "nonRepudiation", "keyEncipherment", "dataEncipherment"),
         default_days=825,
     ),
 }

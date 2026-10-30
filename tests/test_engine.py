@@ -738,7 +738,12 @@ def test_report_and_manifest_do_not_contain_passwords(tmp_path: Path):
 def test_opcua_profile_and_application_uri_validation():
     profile = PROFILES["opcua_server"]
     assert profile.extended_key_usage == ("serverAuth", "clientAuth")
-    assert profile.key_usage == ("digitalSignature", "keyEncipherment")
+    assert profile.key_usage == (
+        "digitalSignature",
+        "nonRepudiation",
+        "keyEncipherment",
+        "dataEncipherment",
+    )
     assert normalize_application_uri("urn:red-0b-bd-84.local:server") == "urn:red-0b-bd-84.local:server"
     try:
         normalize_application_uri("https://red-0b-bd-84.local")
@@ -782,7 +787,12 @@ def test_issue_opcua_server_package_with_crl(tmp_path: Path):
 def test_opcua_client_profile_extended_key_usage():
     profile = PROFILES["opcua_client"]
     assert profile.extended_key_usage == ("clientAuth",)
-    assert profile.key_usage == ("digitalSignature", "keyEncipherment")
+    assert profile.key_usage == (
+        "digitalSignature",
+        "nonRepudiation",
+        "keyEncipherment",
+        "dataEncipherment",
+    )
 
 
 def test_issue_opcua_client_package_with_crl(tmp_path: Path):
