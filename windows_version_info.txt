@@ -16,12 +16,12 @@ VSVersionInfo(
         '040904B0',
         [StringStruct('CompanyName', 'HMS Networks'),
          StringStruct('FileDescription', 'Industrial Certificate Assistant'),
-         StringStruct('FileVersion', '0.10.3.0'),
+         StringStruct('FileVersion', '0.10.4.0'),
          StringStruct('InternalName', 'IndustrialCertificateAssistant'),
          StringStruct('LegalCopyright', 'Copyright 2026 HMS Networks'),
          StringStruct('OriginalFilename', 'IndustrialCertificateAssistant.exe'),
          StringStruct('ProductName', 'Industrial Certificate Assistant'),
-         StringStruct('ProductVersion', '0.10.3')]
+         StringStruct('ProductVersion', '0.10.4')]
       )
     ]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])

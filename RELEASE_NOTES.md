@@ -1,3 +1,14 @@
+# Version 0.10.4
+
+- Added a Crimson 3.2 OPC UA Server profile. It issues an RSA 2048 key in
+  PKCS#1 format with SHA-256 for use under Network > Identity on Crimson 3.2
+  devices. The OPC UA Server profile still follows the project's key settings.
+- OPC UA packages now also include a DER CRL for each CA named for OPC UA trust
+  stores: `opcua-trust/issuers/crl/intermediate-ca.crl` and, when the root key
+  is available, `opcua-trust/trusted/crl/root-ca.crl`. Clients such as UaExpert
+  that check revocation look for these. The existing `.crl.der` and `.crl.pem`
+  files are still included.
+
 # Version 0.10.3
 
 - Fixed OPC UA server and client certificate profiles to include

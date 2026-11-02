@@ -70,6 +70,17 @@ PROFILES = {
         key_usage=("digitalSignature", "nonRepudiation", "keyEncipherment", "dataEncipherment"),
         default_days=825,
     ),
+    "crimson_opcua_server": CertificateProfile(
+        key="crimson_opcua_server",
+        title="Crimson 3.2 OPC UA Server",
+        description="OPC UA server identity for Crimson 3.2 devices: RSA 2048, PKCS#1 key, SHA-256.",
+        extended_key_usage=("serverAuth", "clientAuth"),
+        key_usage=("digitalSignature", "nonRepudiation", "keyEncipherment", "dataEncipherment"),
+        default_days=825,
+        leaf_key_type="RSA",
+        leaf_key_size_or_curve="RSA 2048",
+        leaf_digest="SHA-256",
+    ),
     "opcua_client": CertificateProfile(
         key="opcua_client",
         title="OPC UA client",

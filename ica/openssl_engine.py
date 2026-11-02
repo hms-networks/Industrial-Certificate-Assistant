@@ -977,12 +977,17 @@ class OpenSSLEngine:
 
     def generate_intermediate_crl(self, workspace: Path, ca_password: str,
                                   days: int = 365) -> dict[str, Path]:
-        int_dir = workspace / "intermediate-ca"
-        int_key = int_dir / "private" / "intermediate-ca.key.pem"
-        int_cert = int_dir / "certs" / "intermediate-ca.cert.pem"
-        if is_encrypted_private_key(int_key) and not ca_password:
+        return self._generate_crl(workspace / "intermediate-ca", "intermediate-ca", ca_password, days)
+
+    def generate_root_crl(self, workspace: Path, ca_password: str, days: int = 365) -> dict[str, Path]:
+        return self._generate_crl(workspace / "root-ca", "root-ca", ca_password, days)
+
+    def _generate_crl(self, ca_dir: Path, name: str, ca_password: str, days: int) -> dict[str, Path]:
+        ca_key = ca_dir / "private" / f"{name}.key.pem"
+        ca_cert = ca_dir / "certs" / f"{name}.cert.pem"
+        if is_encrypted_private_key(ca_key) and not ca_password:
             raise ValueError("This project uses encrypted CA keys; enter the CA password to generate a CRL.")
-        state = int_dir / "crl"
+        state = ca_dir / "crl"
         new_certs = state / "newcerts"
         new_certs.mkdir(parents=True, exist_ok=True)
         index = state / "index.txt"
@@ -998,14 +1003,14 @@ class OpenSSLEngine:
         config.write_text(
             "[ ca ]\ndefault_ca = CA_default\n[ CA_default ]\n"
             f'database = "{index.as_posix()}"\nnew_certs_dir = "{new_certs.as_posix()}"\n'
-            f'certificate = "{int_cert.as_posix()}"\nprivate_key = "{int_key.as_posix()}"\n'
+            f'certificate = "{ca_cert.as_posix()}"\nprivate_key = "{ca_key.as_posix()}"\n'
             f'serial = "{serial.as_posix()}"\ncrlnumber = "{crlnumber.as_posix()}"\n'
             "default_md = sha256\ndefault_crl_days = " + str(days) + "\n"
             "policy = policy_any\n[ policy_any ]\ncommonName = supplied\n",
             encoding="utf-8",
         )
-        pem = state / "intermediate-ca.crl.pem"
-        der = state / "intermediate-ca.crl.der"
+        pem = state / f"{name}.crl.pem"
+        der = state / f"{name}.crl.der"
         args = ["ca", "-gencrl", "-config", str(config), "-out", str(pem)]
         if ca_password:
             args += ["-passin", "file:{PASSFILE}"]
@@ -1014,24 +1019,63 @@ class OpenSSLEngine:
         self.run("crl", "-in", str(pem), "-noout", "-issuer", "-lastupdate", "-nextupdate")
         return {"crl_pem": pem, "crl_der": der}
 
+    def _require_opcua_server_key(self, output: Path, key_name: str, key_password: str) -> None:
+        """Refuse to reuse a key the OPC UA server profile can't deploy, before
+        the reissue archives the current package."""
+        key = next((path for path in (output / package_layout.DEPLOY / key_name, output / key_name)
+                    if path.is_file()), None)
+        if key is None:
+            return
+        text = self.run("pkey", "-in", str(key), "-noout", "-text",
+                        *(["-passin", "file:{PASSFILE}"] if key_password else []),
+                        password=key_password if key_password else None)
+        if "Private-Key: (2048 bit" not in text or "modulus:" not in text:
+            raise ValueError("The Crimson 3.2 OPC UA Server profile uses RSA 2048, and this package's existing "
+                             "key is different. Reissue with a new key.")
+
+    def _write_traditional_rsa_key(self, key: Path, key_password: str) -> None:
+        if b"BEGIN RSA PRIVATE KEY" in key.read_bytes():
+            return
+        converted = key.with_name(key.name + ".pkcs1")
+        # OpenSSL reads one line per use from a shared file, so -passin and
+        # -passout need separate password files.
+        self._run("rsa", "-in", str(key), "-out", str(converted), "-traditional",
+                  *(["-passin", "file:{PASSIN}", "-aes256", "-passout", "file:{PASSOUT}"] if key_password else []),
+                  passwords={"{PASSIN}": key_password, "{PASSOUT}": key_password} if key_password else {})
+        converted.chmod(key.stat().st_mode)
+        converted.replace(key)
+
     def _issue_opcua(self, workspace: Path, output: Path, subject: Subject,
                      sans: Iterable[str], application_uri: str,
                      ca_password: str, key_password: str,
                      profile: CertificateProfile, prefix: str, role_label: str,
                      reissue: str = "new", **kwargs) -> dict[str, Path]:
         uri = normalize_application_uri(application_uri)
+        if profile.leaf_key_size_or_curve:
+            kwargs.update(key_type=profile.leaf_key_type, key_size_or_curve=profile.leaf_key_size_or_curve,
+                          digest=profile.leaf_digest or "SHA-256")
+            if reissue == "existing":
+                self._require_opcua_server_key(output, f"{prefix}-private-key.pem", key_password)
         existing_key, archive = self._prepare_reissue(output, reissue, f"{prefix}-private-key.pem")
         sans = list(sans)
         result = self.issue_server(workspace, output, subject, sans, ca_password, key_password,
                                    profile=profile, application_uri=uri,
                                    existing_key=existing_key, organize=False, **kwargs)
         self._rename_profile_files(result, output, prefix)
+        if profile.leaf_key_size_or_curve:
+            self._write_traditional_rsa_key(result["private_key"], key_password)
+            self.validate_server_certificate(result["certificate"], result["private_key"], result["ca_chain"], sans,
+                                             key_password=key_password)
         crls = self.generate_intermediate_crl(workspace, ca_password)
+        # A project may keep its root key offline; it can still issue.
+        root_key = workspace / "root-ca" / "private" / "root-ca.key.pem"
+        root_crls = self.generate_root_crl(workspace, ca_password) if root_key.is_file() else None
         trust = output / "opcua-trust"
         trusted = trust / "trusted" / "certs"
         issuers = trust / "issuers" / "certs"
         crl_dir = trust / "issuers" / "crl"
-        for folder in (trusted, issuers, crl_dir):
+        root_crl_dir = trust / "trusted" / "crl"
+        for folder in (trusted, issuers, crl_dir, root_crl_dir):
             folder.mkdir(parents=True, exist_ok=True)
         root_der = trusted / "root-ca.der"
         int_der = issuers / "intermediate-ca.der"
@@ -1041,6 +1085,13 @@ class OpenSSLEngine:
         self.run("x509", "-in", str(result["intermediate"]), "-outform", "DER", "-out", str(int_der))
         shutil.copy2(crls["crl_der"], crl_der)
         shutil.copy2(crls["crl_pem"], crl_pem)
+        # UaExpert only loaded DER CRLs named *.crl, and it needs one per CA.
+        issuer_crl = crl_dir / "intermediate-ca.crl"
+        shutil.copy2(crls["crl_der"], issuer_crl)
+        root_crl = None
+        if root_crls:
+            root_crl = root_crl_dir / "root-ca.crl"
+            shutil.copy2(root_crls["crl_der"], root_crl)
         leaf_der = output / f"{prefix}-certificate.der"
         self.run("x509", "-in", str(result["certificate"]), "-outform", "DER", "-out", str(leaf_der))
         guide = (
@@ -1049,16 +1100,23 @@ class OpenSSLEngine:
             f"1. Install deploy/{prefix}-certificate.pem (or .der) and deploy/{prefix}-private-key.pem as the {role_label} application identity.\n"
             "2. Install deploy/opcua-trust/ (issuing chain and CRL) in the application's OPC UA trust stores, not only the HTTPS identity store.\n"
             "3. Trust the counterpart OPC UA application certificate on each endpoint it connects to.\n"
-            "4. On UAExpert/PI, place trusted and issuer files according to the opcua-trust tree.\n"
+            "4. On UAExpert/PI, place trusted and issuer files according to the opcua-trust tree. Clients that "
+            "check revocation need a DER CRL for each CA, named .crl (in trusted/crl and issuers/crl).\n"
             "5. Confirm the endpoint ApplicationUri exactly matches the URI SAN above.\n"
             "6. Test Basic256Sha256 and inspect the precise Bad_* status before production rollout.\n"
+            + ("7. On the Crimson 3.2 device, upload the full chain and key under Network > Identity, with Default "
+               "Cert set to Specified Below.\n" if profile.leaf_key_size_or_curve else "")
         )
         report = result["report"]
         report.write_text(
             f"Profile: OPC UA {role_label}\nApplication URI: " + uri + "\n"
-            "CRL (PEM): " + str(crl_pem) + "\nCRL (DER): " + str(crl_der) + "\n\n"
+            "CRL (PEM): " + str(crl_pem) + "\nCRL (DER): " + str(crl_der) + "\n"
+            "Issuing CA CRL for OPC UA stores: " + str(issuer_crl) + "\n"
+            + (f"Root CA CRL for OPC UA stores: {root_crl}\n" if root_crl else "") + "\n"
             + report.read_text(encoding="utf-8"), encoding="utf-8")
-        result.update(crl_pem=crl_pem, crl_der=crl_der,
+        if root_crl:
+            result["root_crl"] = root_crl
+        result.update(crl_pem=crl_pem, crl_der=crl_der, issuer_crl=issuer_crl,
                       root_der=root_der, intermediate_der=int_der, certificate_der=leaf_der)
         if archive:
             result["archive"] = archive
@@ -1077,6 +1135,14 @@ class OpenSSLEngine:
                            reissue: str = "new", **kwargs) -> dict[str, Path]:
         return self._issue_opcua(workspace, output, subject, sans, application_uri,
                                  ca_password, key_password, PROFILES["opcua_server"],
+                                 "server", "server", reissue=reissue, **kwargs)
+
+    def issue_crimson_opcua_server(self, workspace: Path, output: Path, subject: Subject,
+                                   sans: Iterable[str], application_uri: str,
+                                   ca_password: str, key_password: str,
+                                   reissue: str = "new", **kwargs) -> dict[str, Path]:
+        return self._issue_opcua(workspace, output, subject, sans, application_uri,
+                                 ca_password, key_password, PROFILES["crimson_opcua_server"],
                                  "server", "server", reissue=reissue, **kwargs)
 
     def issue_opcua_client(self, workspace: Path, output: Path, subject: Subject,

@@ -8,6 +8,8 @@ import subprocess
 from inspect import signature
 from pathlib import Path
 
+import pytest
+
 from app import IMPORT_PACKAGE_TITLES, ISSUE_PROFILE_TITLES
 from ica.openssl_engine import OpenSSLEngine, OpenSSLError, Subject, normalize_application_uri, normalize_sans
 from ica.profiles import PROFILES
@@ -782,6 +784,135 @@ def test_issue_opcua_server_package_with_crl(tmp_path: Path):
     assert result["intermediate_der"].exists()
     assert result["readme"].exists()
     assert "OK" in engine.verify_chain(result["certificate"], result["ca_chain"])
+
+
+def _opcua_project(tmp_path: Path, name: str) -> tuple[OpenSSLEngine, Path, Project]:
+    engine = OpenSSLEngine()
+    workspace = tmp_path / name
+    project = Project(str(workspace), "UA Org", "UA PKI", "local")
+    project.save()
+    engine.create_pki(workspace, Subject("UA Root", "UA Org"), Subject("UA Issuing", "UA Org"), "")
+    return engine, workspace, project
+
+
+def test_opcua_server_keeps_following_the_project_settings(tmp_path: Path):
+    engine, workspace, project = _opcua_project(tmp_path, "opcua-key")
+    output = project.opcua_server_folder("server")
+    args = (workspace, output, Subject("server.local", "UA Org"), ["server.local"], "urn:server.local:server", "", "")
+    first = engine.issue_opcua_server(*args, key_type="RSA", key_size_or_curve="RSA 3072", digest="SHA-384")
+    old_key = first["private_key"].read_bytes()
+    assert old_key.startswith(b"-----BEGIN PRIVATE KEY-----")
+    text = engine.inspect_certificate(first["certificate"])
+    assert "Public-Key: (3072 bit)" in text
+    assert "sha384WithRSAEncryption" in text
+    second = engine.issue_opcua_server(*args, reissue="existing")
+    assert second["private_key"].read_bytes() == old_key
+
+
+def test_opcua_server_still_issues_ecdsa(tmp_path: Path):
+    engine, workspace, project = _opcua_project(tmp_path, "opcua-ec")
+    result = engine.issue_opcua_server(
+        workspace, project.opcua_server_folder("server"), Subject("server.local", "UA Org"), ["server.local"],
+        "urn:server.local:server", "", "", key_type="ECDSA", key_size_or_curve="P-256",
+    )
+    assert "prime256v1" in engine.inspect_certificate(result["certificate"])
+
+
+def test_crimson_opcua_server_key_is_rsa_2048_pkcs1_whatever_the_project_uses(tmp_path: Path):
+    engine, workspace, project = _opcua_project(tmp_path, "crimson-key")
+    result = engine.issue_crimson_opcua_server(
+        workspace, project.opcua_server_folder("server"), Subject("server.local", "UA Org"), ["server.local"],
+        "urn:server.local:server", "", "", key_type="RSA", key_size_or_curve="RSA 3072", digest="SHA-384",
+    )
+    assert result["private_key"].read_text().startswith("-----BEGIN RSA PRIVATE KEY-----")
+    text = engine.inspect_certificate(result["certificate"])
+    assert "Public-Key: (2048 bit)" in text
+    assert "sha256WithRSAEncryption" in text
+    assert "OK" in engine.verify_chain(result["certificate"], result["ca_chain"])
+    assert PROFILES["crimson_opcua_server"].title in ISSUE_PROFILE_TITLES
+
+
+def test_crimson_opcua_server_encrypted_key_stays_encrypted_pkcs1(tmp_path: Path):
+    engine, workspace, project = _opcua_project(tmp_path, "crimson-key-enc")
+    result = engine.issue_crimson_opcua_server(
+        workspace, project.opcua_server_folder("server"), Subject("server.local", "UA Org"), ["server.local"],
+        "urn:server.local:server", "", "key-password",
+    )
+    key = result["private_key"].read_text()
+    assert key.startswith("-----BEGIN RSA PRIVATE KEY-----")
+    assert "Proc-Type: 4,ENCRYPTED" in key
+    engine.run("pkey", "-in", str(result["private_key"]), "-noout", "-passin", "file:{PASSFILE}", password="key-password")
+
+
+def test_crimson_opcua_server_reissue_refuses_other_keys_before_archiving(tmp_path: Path):
+    engine, workspace, project = _opcua_project(tmp_path, "crimson-key-old")
+    output = project.opcua_server_folder("server")
+    args = (workspace, output, Subject("server.local", "UA Org"), ["server.local"], "urn:server.local:server", "", "")
+    first = engine.issue_opcua_server(*args, key_type="RSA", key_size_or_curve="RSA 3072")
+    with pytest.raises(ValueError, match="RSA 2048"):
+        engine.issue_crimson_opcua_server(*args, reissue="existing")
+    assert first["private_key"].exists()
+    assert not (output / "archive").exists() or not any((output / "archive").iterdir())
+
+
+def test_opcua_issue_works_with_root_key_kept_offline(tmp_path: Path):
+    engine, workspace, project = _opcua_project(tmp_path, "opcua-offline-root")
+    (workspace / "root-ca" / "private" / "root-ca.key.pem").unlink()
+    result = engine.issue_opcua_server(
+        workspace, project.opcua_server_folder("server"), Subject("server.local", "UA Org"), ["server.local"],
+        "urn:server.local:server", "", "",
+    )
+    assert result["issuer_crl"].is_file()
+    assert "root_crl" not in result
+
+
+def test_opcua_package_has_der_crl_per_ca_named_for_opcua_stores(tmp_path: Path):
+    engine, workspace, project = _opcua_project(tmp_path, "opcua-crls")
+    result = engine.issue_opcua_server(
+        workspace, project.opcua_server_folder("server"), Subject("server.local", "UA Org"), ["server.local"],
+        "urn:server.local:server", "", "",
+    )
+    assert result["issuer_crl"].relative_to(result["issuer_crl"].parents[3]).as_posix() == "opcua-trust/issuers/crl/intermediate-ca.crl"
+    assert result["root_crl"].relative_to(result["root_crl"].parents[3]).as_posix() == "opcua-trust/trusted/crl/root-ca.crl"
+    pems = {}
+    for key in ("issuer_crl", "root_crl"):
+        assert result[key].read_bytes().startswith(b"0")
+        pems[key] = tmp_path / f"{key}.pem"
+        engine.run("crl", "-inform", "DER", "-in", str(result[key]), "-out", str(pems[key]))
+    full = ["verify", "-CAfile", str(result["root"]), "-untrusted", str(result["intermediate"]), "-crl_check_all"]
+    assert "OK" in engine.run(*full, "-CRLfile", str(pems["issuer_crl"]), "-CRLfile", str(pems["root_crl"]),
+                              str(result["certificate"]))
+    with pytest.raises(OpenSSLError):
+        engine.run(*full, "-CRLfile", str(pems["issuer_crl"]), str(result["certificate"]))
+
+
+def test_opcua_client_package_has_both_crls(tmp_path: Path):
+    engine, workspace, project = _opcua_project(tmp_path, "opcua-client-crls")
+    result = engine.issue_opcua_client(
+        workspace, project.opcua_client_folder("client"), Subject("client", "UA Org"), ["client.local"],
+        "urn:client.local:client", "", "",
+    )
+    assert result["issuer_crl"].is_file()
+    assert result["root_crl"].is_file()
+
+
+def test_generate_root_crl_with_encrypted_ca_needs_password(tmp_path: Path):
+    engine = OpenSSLEngine()
+    workspace = tmp_path / "enc-root"
+    Project(str(workspace), "UA Org", "UA PKI", "local").save()
+    engine.create_pki(workspace, Subject("UA Root", "UA Org"), Subject("UA Issuing", "UA Org"), "ca-password")
+    with pytest.raises(ValueError, match="CA password"):
+        engine.generate_root_crl(workspace, "")
+    assert engine.generate_root_crl(workspace, "ca-password")["crl_der"].read_bytes().startswith(b"0")
+
+
+def test_opcua_client_key_still_follows_the_project(tmp_path: Path):
+    engine, workspace, project = _opcua_project(tmp_path, "opcua-client-key")
+    result = engine.issue_opcua_client(
+        workspace, project.opcua_client_folder("client"), Subject("client", "UA Org"), ["client.local"],
+        "urn:client.local:client", "", "", key_type="RSA", key_size_or_curve="RSA 3072",
+    )
+    assert "Public-Key: (3072 bit)" in engine.inspect_certificate(result["certificate"])
 
 
 def test_opcua_client_profile_extended_key_usage():

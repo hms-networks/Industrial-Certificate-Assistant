@@ -4,11 +4,12 @@ Cross-platform guided PKI utility for industrial HTTPS, MQTT, and OPC UA
 certificate profiles. Cryptographic operations are performed by OpenSSL;
 the desktop interface is built with Python and PySide6.
 
-## Version 0.10.3
+## Version 0.10.4
 
-- Fixed OPC UA server and client profiles to include the complete RSA
-  application-certificate key usage required by strict OPC UA validators:
-  digital signature, non-repudiation, key encipherment, and data encipherment.
+- Added a Crimson 3.2 OPC UA Server profile: RSA 2048, PKCS#1 key, SHA-256.
+  The OPC UA Server profile still follows the project's key settings.
+- OPC UA packages now include a DER CRL for each CA, named `.crl`, for clients
+  such as UaExpert that check revocation.
 
 ## Version 0.10.2
 
@@ -282,7 +283,7 @@ Passwords are never stored in `ica-project.json`.
 Copyright 2026 HMS Networks. Licensed under the Apache License 2.0. See
 `LICENSE` and `NOTICE`. OpenSSL redistribution information is documented in
 `THIRD_PARTY_NOTICES.md`.
-Industrial Certificate Assistant build files (version 0.10.3)
+Industrial Certificate Assistant build files (version 0.10.4)
 
 Place these files beside app.py and requirements.txt:
 
@@ -306,10 +307,10 @@ Application version label:
 
   Then use APP_VERSION wherever the GUI displays the release number.
 
-The Windows build embeds 0.10.3.0 in EXE file metadata and bundles VERSION.txt.
+The Windows build embeds 0.10.4.0 in EXE file metadata and bundles VERSION.txt.
 The runtime hook points bundled OpenSSL at its bundled openssl.cnf before app.py starts.
 
-Industrial Certificate Assistant build files (version 0.10.3)
+Industrial Certificate Assistant build files (version 0.10.4)
 
 Place these files beside app.py and requirements.txt:
 
@@ -333,6 +334,6 @@ Application version label:
 
   Then use APP_VERSION wherever the GUI displays the release number.
 
-The Windows build embeds 0.10.3.0 in EXE file metadata and bundles VERSION.txt.
+The Windows build embeds 0.10.4.0 in EXE file metadata and bundles VERSION.txt.
 The runtime hook points bundled OpenSSL at its bundled openssl.cnf before app.py starts.
 When a splash image is present, the builders install Pillow if it is not already available.

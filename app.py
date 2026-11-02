@@ -30,6 +30,7 @@ ISSUE_PROFILE_TITLES = (
     "MQTT Broker",
     "MQTT Client/Device",
     "OPC UA Server",
+    "Crimson 3.2 OPC UA Server",
     "OPC UA Client",
 )
 
@@ -602,7 +603,8 @@ class MainWindow(QMainWindow):
         self.issue_ip_warning.setWordWrap(True)
         self.issue_ip_warning.setStyleSheet("color: #9a3412; font-weight: 600;")
         self.set_help(self.iws, "Project workspace containing the issuing CA certificates and keys.")
-        self.set_help(self.issue_protocol, "Choose which certificate profile to issue.")
+        self.set_help(self.issue_protocol, "Choose which certificate profile to issue. Crimson 3.2 OPC UA Server "
+                      "always uses RSA 2048, a PKCS#1 key, and SHA-256, whatever the project's key settings are.")
         self.set_help(self.mqtt_role, "Broker certificates identify MQTT servers; client certificates identify connecting devices.")
         self.set_help(self.idevice, "Device, server, or broker name used for folder naming and default certificate identity.")
         self.set_help(self.iclientid, "MQTT Client ID. Required for MQTT client certificates.")
@@ -852,7 +854,7 @@ class MainWindow(QMainWindow):
             return "mqtt", "broker"
         if protocol == "MQTT Client/Device":
             return "mqtt", "client"
-        if protocol == "OPC UA Server":
+        if protocol in {"OPC UA Server", "Crimson 3.2 OPC UA Server"}:
             return "opcua", "server"
         if protocol == "OPC UA Client":
             return "opcua", "client"
@@ -1090,12 +1092,16 @@ class MainWindow(QMainWindow):
         elif mode == "opcua":
             prefix = "client" if role == "client" else "server"
             header = f"OPC UA {prefix} package preview ({self.iapplication_uri.text().strip() or 'Application URI required'})"
+            if self.issue_protocol.currentText() == "Crimson 3.2 OPC UA Server":
+                header += "; leaf key: RSA 2048, PKCS#1, SHA-256"
             deploy = [f"{prefix}-certificate.pem", f"{prefix}-certificate.der",
                       f"{prefix}-private-key.pem", f"{prefix}-fullchain.pem",
                       "opcua-trust/trusted/certs/root-ca.der",
                       "opcua-trust/issuers/certs/intermediate-ca.der",
                       "opcua-trust/issuers/crl/intermediate-ca.crl.pem",
-                      "opcua-trust/issuers/crl/intermediate-ca.crl.der"]
+                      "opcua-trust/issuers/crl/intermediate-ca.crl.der",
+                      "opcua-trust/issuers/crl/intermediate-ca.crl",
+                      "opcua-trust/trusted/crl/root-ca.crl"]
             if role == "server" and self.export_pfx.isChecked():
                 deploy.append(f"{prefix}-certificate.pfx")
             records = [f"{prefix}-request.csr.pem", f"{prefix}-certificate.ext", "certificate-report.txt"]
@@ -1257,7 +1263,12 @@ class MainWindow(QMainWindow):
                         raise ValueError("Enter a password to protect the .pfx bundle.")
                     if self.pfx_pass.text() != self.pfx_pass_confirm.text():
                         raise ValueError("The .pfx passwords do not match.")
-                issuer = self.engine.issue_opcua_client if role == "client" else self.engine.issue_opcua_server
+                if role == "client":
+                    issuer = self.engine.issue_opcua_client
+                elif self.issue_protocol.currentText() == "Crimson 3.2 OPC UA Server":
+                    issuer = self.engine.issue_crimson_opcua_server
+                else:
+                    issuer = self.engine.issue_opcua_server
                 result = issuer(
                     self.project.path, Path(self.iout.text()),
                     Subject(self.icn.text(), self.project.organization), sans_values,

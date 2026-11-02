@@ -66,7 +66,7 @@ _DESCRIPTIONS = {
     "hivemq-config.xml": "HiveMQ TLS listener; complete container config or block merged by the installer.",
     "install-hivemq-tls.sh": "Guarded installer for systemd-managed HiveMQ (backup, rollback, verification).",
     "verify-hivemq-tls.sh": "Connection and mutual-TLS test against the broker, run from a client machine.",
-    "opcua-trust": "OPC UA application trust store: trusted/ root CA, issuers/ issuing CA and CRLs.",
+    "opcua-trust": "OPC UA application trust store: trusted/ root CA and its CRL, issuers/ issuing CA and its CRLs.",
     MANIFEST: "Machine-readable package description (profile, identity, serial, expiry).",
 }
 
