@@ -348,7 +348,13 @@ class OpenSSLEngine:
         self.run(*root_key_args, password=password if password else None)
         root_req_args = ["req", "-x509", "-new", f"-{digest_name}", "-key", str(root_key)]
         if password: root_req_args += ["-passin", "file:{PASSFILE}"]
-        root_req_args += ["-days", str(root_days), "-subj", root_subject.openssl_subject(), "-addext", "basicConstraints=critical,CA:TRUE,pathlen:1", "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-out", str(root_cert)]
+        root_req_args += ["-days", str(root_days), "-subj", root_subject.openssl_subject(), "-addext", "basicConstraints=critical,CA:TRUE,pathlen:1", "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+                          # OpenSSL >= 3.2 leaves AKI off self-signed certificates unless asked for, and
+                          # Crimson 3.2 MQTT TLS rejects a chain in which any certificate lacks AKI
+                          # (TLS alert 42), the root included. Name both identifiers explicitly so every
+                          # OpenSSL version and openssl.cnf produce the same root.
+                          "-addext", "subjectKeyIdentifier=hash", "-addext", "authorityKeyIdentifier=keyid:always",
+                          "-out", str(root_cert)]
         self.run(*root_req_args, password=password if password else None)
         int_key_args = _keygen_args(key_type, key_size_or_curve)
         if password: int_key_args += ["-aes-256-cbc", "-pass", "file:{PASSFILE}"]

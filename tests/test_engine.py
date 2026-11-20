@@ -1374,3 +1374,25 @@ def test_frozen_app_starts_openssl_with_the_users_library_path(tmp_path: Path, m
     monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", "/opt/user/lib")
     assert child_process_environment()["LD_LIBRARY_PATH"] == "/opt/user/lib"
     assert "LD_LIBRARY_PATH_ORIG" not in child_process_environment()
+
+
+def test_root_ca_has_subject_and_authority_key_identifiers(tmp_path: Path):
+    # Crimson 3.2 MQTT TLS rejects a chain in which any certificate, the root
+    # included, lacks AKI; OpenSSL >= 3.2 omits it on self-signed roots by default.
+    engine = OpenSSLEngine()
+    workspace = tmp_path / "aki-pki"
+    result = engine.create_pki(workspace, Subject("AKI Root CA", "Test"), Subject("AKI Issuing CA", "Test"), "")
+    root_text = engine.run("x509", "-in", str(workspace / "root-ca" / "certs" / "root-ca.cert.pem"), "-noout", "-text")
+    int_text = engine.run("x509", "-in", str(result["intermediate_certificate"]), "-noout", "-text")
+
+    def key_ids(text: str) -> tuple[str, str]:
+        lines = [line.strip() for line in text.splitlines()]
+        ski = lines[lines.index("X509v3 Subject Key Identifier:") + 1]
+        aki = lines[lines.index("X509v3 Authority Key Identifier:") + 1].removeprefix("keyid:")
+        return ski, aki
+
+    root_ski, root_aki = key_ids(root_text)
+    int_ski, int_aki = key_ids(int_text)
+    assert root_aki == root_ski
+    assert int_aki == root_ski
+    assert int_ski != root_ski

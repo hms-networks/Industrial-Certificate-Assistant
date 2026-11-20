@@ -1,3 +1,12 @@
+# Unreleased
+
+- New root CAs now carry a Subject Key Identifier and an Authority Key
+  Identifier (`authorityKeyIdentifier=keyid:always`). OpenSSL 3.2 and later
+  leave AKI off self-signed certificates by default, and Crimson 3.2 MQTT TLS
+  rejects a broker chain in which any certificate, the root included, lacks
+  AKI (TLS alert 42, "cert failed"). Existing roots are unchanged; re-create the
+  PKI (or re-sign the root with its key, same serial and dates) to fix one.
+
 # Version 0.10.4
 
 - Added a Crimson 3.2 OPC UA Server profile. It issues an RSA 2048 key in
