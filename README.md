@@ -4,6 +4,12 @@ Cross-platform guided PKI utility for industrial HTTPS, MQTT, and OPC UA
 certificate profiles. Cryptographic operations are performed by OpenSSL;
 the desktop interface is built with Python and PySide6.
 
+## Version 0.10.5
+
+- New root CAs carry a Subject Key Identifier and an Authority Key Identifier
+  (`keyid:always`). OpenSSL 3.2+ leaves AKI off self-signed roots, and Crimson
+  3.2 MQTT TLS rejects a chain in which any certificate lacks AKI.
+
 ## Version 0.10.4
 
 - Added a Crimson 3.2 OPC UA Server profile: RSA 2048, PKCS#1 key, SHA-256.
@@ -283,7 +289,7 @@ Passwords are never stored in `ica-project.json`.
 Copyright 2026 HMS Networks. Licensed under the Apache License 2.0. See
 `LICENSE` and `NOTICE`. OpenSSL redistribution information is documented in
 `THIRD_PARTY_NOTICES.md`.
-Industrial Certificate Assistant build files (version 0.10.4)
+Industrial Certificate Assistant build files (version 0.10.5)
 
 Place these files beside app.py and requirements.txt:
 
@@ -307,10 +313,10 @@ Application version label:
 
   Then use APP_VERSION wherever the GUI displays the release number.
 
-The Windows build embeds 0.10.4.0 in EXE file metadata and bundles VERSION.txt.
+The Windows build embeds 0.10.5.0 in EXE file metadata and bundles VERSION.txt.
 The runtime hook points bundled OpenSSL at its bundled openssl.cnf before app.py starts.
 
-Industrial Certificate Assistant build files (version 0.10.4)
+Industrial Certificate Assistant build files (version 0.10.5)
 
 Place these files beside app.py and requirements.txt:
 
@@ -334,6 +340,6 @@ Application version label:
 
   Then use APP_VERSION wherever the GUI displays the release number.
 
-The Windows build embeds 0.10.4.0 in EXE file metadata and bundles VERSION.txt.
+The Windows build embeds 0.10.5.0 in EXE file metadata and bundles VERSION.txt.
 The runtime hook points bundled OpenSSL at its bundled openssl.cnf before app.py starts.
 When a splash image is present, the builders install Pillow if it is not already available.
