@@ -1,4 +1,4 @@
-# Unreleased
+# Version 0.10.5
 
 - New root CAs now carry a Subject Key Identifier and an Authority Key
   Identifier (`authorityKeyIdentifier=keyid:always`). OpenSSL 3.2 and later
